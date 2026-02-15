@@ -46,18 +46,43 @@ variable "runtime" {
 }
 
 variable "filename" {
-  description = "The path to the Lambda deployment package zip file"
+  description = "Local path to Lambda deployment package zip. Mutually exclusive with s3_bucket/s3_key."
   type        = string
+  default     = null
 
   validation {
-    condition     = can(filebase64sha256(var.filename))
+    condition     = var.filename == null || can(filebase64sha256(var.filename))
     error_message = "filename must point to an existing readable file."
   }
 
   validation {
-    condition     = can(regex("\\.zip$", var.filename))
+    condition     = var.filename == null || can(regex("\\.zip$", var.filename))
     error_message = "filename must point to a .zip file."
   }
+}
+
+variable "source_code_hash" {
+  description = "Optional deployment package hash. If null and filename is used, it is computed automatically."
+  type        = string
+  default     = null
+}
+
+variable "s3_bucket" {
+  description = "S3 bucket containing Lambda deployment package zip. Use with s3_key."
+  type        = string
+  default     = null
+}
+
+variable "s3_key" {
+  description = "S3 key for Lambda deployment package zip. Use with s3_bucket."
+  type        = string
+  default     = null
+}
+
+variable "s3_object_version" {
+  description = "Optional S3 object version for Lambda deployment package."
+  type        = string
+  default     = null
 }
 
 variable "dead_letter_target_arn" {

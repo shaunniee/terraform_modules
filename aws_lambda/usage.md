@@ -2,7 +2,7 @@
 
 Terraform module for creating a Lambda function with:
 - Optional module-managed IAM execution role (or existing role support)
-- Deployment package from local zip file
+- Deployment package from local zip file or S3
 - Dead-letter target (SQS/SNS)
 - Architectures, layers, ephemeral storage, reserved concurrency
 - Optional KMS encryption for Lambda environment variables
@@ -80,6 +80,22 @@ module "lambda" {
 }
 ```
 
+## S3 Package Example
+
+```hcl
+module "lambda" {
+  source = "./aws_lambda"
+
+  function_name = "reports-worker"
+  runtime       = "python3.12"
+  handler       = "handler.main"
+
+  s3_bucket         = "my-lambda-artifacts"
+  s3_key            = "releases/reports-worker.zip"
+  s3_object_version = "3Lg7Rk...."
+}
+```
+
 ## Alias Example
 
 ```hcl
@@ -115,7 +131,11 @@ module "lambda" {
 | `function_name` | string | - | Yes | Lambda function name (1-64, alphanumeric, `-`, `_`) |
 | `runtime` | string | - | Yes | Lambda runtime |
 | `handler` | string | - | Yes | Lambda handler |
-| `filename` | string | - | Yes | Local path to deployment zip file |
+| `filename` | string | `null` | Conditional | Local path to deployment zip file |
+| `source_code_hash` | string | `null` | No | Optional package hash (auto-computed for local file source) |
+| `s3_bucket` | string | `null` | Conditional | S3 bucket containing deployment zip |
+| `s3_key` | string | `null` | Conditional | S3 key containing deployment zip |
+| `s3_object_version` | string | `null` | No | S3 object version for deployment zip |
 | `execution_role_arn` | string | `null` | No | Existing IAM role ARN. If null, module creates role |
 | `description` | string | `null` | No | Lambda description |
 | `timeout` | number | `3` | No | Timeout in seconds (1-900) |
@@ -147,3 +167,10 @@ module "lambda" {
 | `cloudwatch_log_group_name` | Log group name when module creates it |
 | `lambda_alias_arns` | Map of alias ARNs keyed by alias name |
 | `lambda_alias_invoke_arns` | Map of alias invoke ARNs keyed by alias name |
+
+## Package Source Rules
+
+- Set exactly one source type:
+  - `filename`, or
+  - `s3_bucket` + `s3_key`
+- `filename` must point to an existing `.zip` file.
