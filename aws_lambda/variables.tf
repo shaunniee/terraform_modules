@@ -212,7 +212,7 @@ variable "aliases" {
   validation {
     condition = alltrue([
       for alias_name in keys(var.aliases) :
-      can(regex("^(?![0-9]+$)[a-zA-Z0-9-_]{1,128}$", alias_name))
+      can(regex("^[a-zA-Z0-9_-]{1,128}$", alias_name)) && !can(regex("^[0-9]+$", alias_name))
     ])
     error_message = "Alias names must be 1-128 characters, use letters/numbers/hyphens/underscores, and cannot be only digits."
   }
