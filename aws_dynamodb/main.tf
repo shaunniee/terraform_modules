@@ -29,7 +29,7 @@ resource "aws_dynamodb_table" "this" {
   dynamic "global_secondary_index" {
     for_each = var.global_secondary_indexes
     content {
-      name               = global_secondary_index.value.name
+      name = global_secondary_index.value.name
       key_schema {
         attribute_name = global_secondary_index.value.hash_key
         key_type       = "HASH"
@@ -143,7 +143,7 @@ resource "aws_dynamodb_table" "this" {
     }
 
     precondition {
-      condition     = !var.ttl.enabled || (try(var.ttl.attribute_name, null) != null && trim(var.ttl.attribute_name) != "")
+      condition     = !var.ttl.enabled || (try(var.ttl.attribute_name, null) != null && trimspace(var.ttl.attribute_name) != "")
       error_message = "ttl.attribute_name is required when ttl.enabled = true."
     }
   }

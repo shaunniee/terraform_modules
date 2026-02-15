@@ -30,7 +30,7 @@ variable "handler" {
   type        = string
 
   validation {
-    condition     = trim(var.handler) != ""
+    condition     = trimspace(var.handler) != ""
     error_message = "handler must be non-empty."
   }
 }
@@ -40,7 +40,7 @@ variable "runtime" {
   type        = string
 
   validation {
-    condition     = trim(var.runtime) != ""
+    condition     = trimspace(var.runtime) != ""
     error_message = "runtime must be non-empty."
   }
 }

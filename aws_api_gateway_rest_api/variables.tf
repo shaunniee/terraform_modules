@@ -3,7 +3,7 @@ variable "name" {
   type        = string
 
   validation {
-    condition     = trim(var.name) != ""
+    condition     = trimspace(var.name) != ""
     error_message = "name must be non-empty."
   }
 }
@@ -78,7 +78,7 @@ variable "resources" {
   validation {
     condition = alltrue([
       for k, r in var.resources :
-      trim(r.path_part) != "" && (try(r.parent_key, null) == null || contains(keys(var.resources), r.parent_key))
+      trimspace(r.path_part) != "" && (try(r.parent_key, null) == null || contains(keys(var.resources), r.parent_key))
     ])
     error_message = "Each resource must have non-empty path_part and parent_key must reference another resources key when set."
   }

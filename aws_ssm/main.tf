@@ -34,7 +34,7 @@ resource "aws_ssm_parameter" "this" {
     precondition {
       condition = alltrue([
         for p in local.all_parameters :
-        trim(p.name) != "" &&
+        trimspace(p.name) != "" &&
         can(regex("^[a-zA-Z0-9_.\\-/]+$", p.name)) &&
         length(p.name) <= 2048
       ])
@@ -85,7 +85,7 @@ resource "aws_ssm_parameter" "this" {
 }
 
 resource "aws_ssm_parameter_policy" "this" {
-  for_each   = { for p in local.all_parameters : p.name => p if try(p.policies, null) != null }
-  name       = aws_ssm_parameter.this[each.key].name
-  policy     = each.value.policies
+  for_each = { for p in local.all_parameters : p.name => p if try(p.policies, null) != null }
+  name     = aws_ssm_parameter.this[each.key].name
+  policy   = each.value.policies
 }

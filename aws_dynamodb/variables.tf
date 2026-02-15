@@ -13,7 +13,7 @@ variable "hash_key" {
   type        = string
 
   validation {
-    condition     = trim(var.hash_key) != ""
+    condition     = trimspace(var.hash_key) != ""
     error_message = "hash_key must be non-empty."
   }
 }

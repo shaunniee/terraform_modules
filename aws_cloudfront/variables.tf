@@ -25,7 +25,7 @@ variable "default_root_object" {
   default = "index.html"
 
   validation {
-    condition     = trim(var.default_root_object) != "" && !startswith(var.default_root_object, "/")
+    condition     = trimspace(var.default_root_object) != "" && !startswith(var.default_root_object, "/")
     error_message = "default_root_object must be non-empty and must not start with '/'."
   }
 }
@@ -48,7 +48,7 @@ variable "aliases" {
   validation {
     condition = alltrue([
       for a in var.aliases :
-      trim(a) != ""
+      trimspace(a) != ""
     ])
     error_message = "aliases cannot contain empty values."
   }
@@ -112,7 +112,7 @@ variable "logging" {
   default = null
 
   validation {
-    condition     = var.logging == null || trim(var.logging.bucket) != ""
+    condition     = var.logging == null || trimspace(var.logging.bucket) != ""
     error_message = "logging.bucket must be non-empty when logging is configured."
   }
 }
@@ -141,7 +141,7 @@ EOT
   validation {
     condition = alltrue([
       for o in values(var.origins) :
-      trim(o.domain_name) != "" && trim(o.origin_id) != ""
+      trimspace(o.domain_name) != "" && trimspace(o.origin_id) != ""
     ])
     error_message = "Each origin must include non-empty domain_name and origin_id."
   }
@@ -160,7 +160,7 @@ variable "default_cache_behavior" {
   default = null
 
   validation {
-    condition     = var.default_cache_behavior == null || trim(var.default_cache_behavior.target_origin_id) != ""
+    condition     = var.default_cache_behavior == null || trimspace(var.default_cache_behavior.target_origin_id) != ""
     error_message = "default_cache_behavior.target_origin_id must be non-empty when provided."
   }
 }
@@ -173,7 +173,7 @@ variable "default_cache_behaviour" {
   default = null
 
   validation {
-    condition     = var.default_cache_behaviour == null || trim(var.default_cache_behaviour.target_origin_id) != ""
+    condition     = var.default_cache_behaviour == null || trimspace(var.default_cache_behaviour.target_origin_id) != ""
     error_message = "default_cache_behaviour.target_origin_id must be non-empty when provided."
   }
 }
@@ -212,7 +212,7 @@ EOT
   validation {
     condition = var.ordered_cache_behavior == null || alltrue([
       for b in values(var.ordered_cache_behavior) :
-      trim(b.target_origin_id) != ""
+      trimspace(b.target_origin_id) != ""
     ])
     error_message = "Each ordered_cache_behavior.target_origin_id must be non-empty."
   }
@@ -279,7 +279,7 @@ variable "ordered_cache_behaviour" {
   validation {
     condition = var.ordered_cache_behaviour == null || alltrue([
       for b in values(var.ordered_cache_behaviour) :
-      trim(b.target_origin_id) != ""
+      trimspace(b.target_origin_id) != ""
     ])
     error_message = "Each ordered_cache_behaviour.target_origin_id must be non-empty."
   }
