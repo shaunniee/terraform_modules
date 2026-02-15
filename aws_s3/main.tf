@@ -2,56 +2,56 @@
 // Create with prevent destroy 
 
 resource "aws_s3_bucket" "protected" {
-    count = var.prevent_destroy ? 1 : 0
-    bucket = var.bucket_name
-    force_destroy = var.force_destroy
-    lifecycle {
-      prevent_destroy = true
-    }
+  count         = var.prevent_destroy ? 1 : 0
+  bucket        = var.bucket_name
+  force_destroy = var.force_destroy
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 // Create without prevent destroy
 
 resource "aws_s3_bucket" "unprotected" {
-    count = var.prevent_destroy ? 0 : 1
-    bucket = var.bucket_name
-    force_destroy = var.force_destroy
-    lifecycle {
-      prevent_destroy = false
-    }
+  count         = var.prevent_destroy ? 0 : 1
+  bucket        = var.bucket_name
+  force_destroy = var.force_destroy
+  lifecycle {
+    prevent_destroy = false
+  }
 }
 
 # Define private access
 
 resource "aws_s3_bucket_public_access_block" "this" {
-    count = var.private_bucket ? 1 : 0
-    bucket = var.prevent_destroy ? aws_s3_bucket.protected[0].id : aws_s3_bucket.unprotected[0].id
-    block_public_acls = var.private_bucket
-    block_public_policy = var.private_bucket
-    ignore_public_acls = var.private_bucket
-    restrict_public_buckets = var.private_bucket
+  count                   = var.private_bucket ? 1 : 0
+  bucket                  = var.prevent_destroy ? aws_s3_bucket.protected[0].id : aws_s3_bucket.unprotected[0].id
+  block_public_acls       = var.private_bucket
+  block_public_policy     = var.private_bucket
+  ignore_public_acls      = var.private_bucket
+  restrict_public_buckets = var.private_bucket
 }
 
 # Define versioning
 
 resource "aws_s3_bucket_versioning" "this" {
-    bucket = var.prevent_destroy ? aws_s3_bucket.protected[0].id : aws_s3_bucket.unprotected[0].id
-    versioning_configuration {
-        status = "Enabled"
-    }
+  bucket = var.prevent_destroy ? aws_s3_bucket.protected[0].id : aws_s3_bucket.unprotected[0].id
+  versioning_configuration {
+    status = var.versioning.enabled ? "Enabled" : "Suspended"
+  }
 }
 
 # Define encryption
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
-    count = var.server_side_encryption.enabled ? 1 : 0
-    bucket = var.prevent_destroy ? aws_s3_bucket.protected[0].id : aws_s3_bucket.unprotected[0].id
-    rule {
-        apply_server_side_encryption_by_default {
-            sse_algorithm = var.server_side_encryption.encryption_algorithm
-            kms_master_key_id = var.server_side_encryption.kms_master_key_id
-        }
+  count  = var.server_side_encryption.enabled ? 1 : 0
+  bucket = var.prevent_destroy ? aws_s3_bucket.protected[0].id : aws_s3_bucket.unprotected[0].id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = var.server_side_encryption.encryption_algorithm
+      kms_master_key_id = var.server_side_encryption.kms_master_key_id
     }
+  }
 }
 
 # Define Lifecycle configuration
@@ -94,7 +94,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
         for_each = lookup(rule.value, "noncurrent_version_transition", [])
         content {
           noncurrent_days = noncurrent_version_transition.value.noncurrent_days
-          storage_class = noncurrent_version_transition.value.storage_class
+          storage_class   = noncurrent_version_transition.value.storage_class
         }
       }
 
@@ -120,14 +120,14 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
 # Define Logging
 
 resource "aws_s3_bucket" "this" {
-  count = var.logging.enabled && var.logging.managed_bucket ? 1 : 0
+  count  = var.logging.enabled && var.logging.managed_bucket ? 1 : 0
   bucket = "${var.bucket_name}-logs"
-  
+
 }
 
 resource "aws_s3_bucket_logging" "this" {
-  count  = var.logging.enabled ? 1 : 0
-  bucket = var.prevent_destroy ? aws_s3_bucket.protected[0].id : aws_s3_bucket.unprotected[0].id
+  count         = var.logging.enabled ? 1 : 0
+  bucket        = var.prevent_destroy ? aws_s3_bucket.protected[0].id : aws_s3_bucket.unprotected[0].id
   target_bucket = var.logging.target_bucket != "" ? var.logging.target_bucket : (var.logging.managed_bucket ? aws_s3_bucket.this[0].id : "")
   target_prefix = var.logging.target_prefix ? var.logging.target_prefix : (var.logging.managed_bucket ? "logs/" : "")
 }
@@ -243,6 +243,5 @@ resource "aws_s3_bucket_cors_configuration" "this" {
     }
   }
 }
-
 
 

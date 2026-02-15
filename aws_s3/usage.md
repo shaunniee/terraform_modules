@@ -26,7 +26,7 @@ module "s3_bucket" {
 ```
 
 This creates a private S3 bucket with:
-- Versioning enabled
+- Versioning enabled (default)
 - AES256 encryption
 - Public access blocked
 - Prevent destroy lifecycle policy
@@ -230,7 +230,7 @@ module "s3_bucket" {
 ```
 
 **Requirements:**
-- Source bucket must have versioning enabled (automatic in this module)
+- Source bucket should have versioning enabled (enabled by default in this module, configurable via `versioning.enabled`)
 - Destination bucket must exist and have versioning enabled
 - Destination bucket ARN is **mandatory**
 
@@ -265,6 +265,7 @@ module "s3_bucket" {
 | `force_destroy` | bool | `false` | No | Allow bucket deletion even with objects inside |
 | `private_bucket` | bool | `true` | No | Block all public access |
 | `prevent_destroy` | bool | `true` | No | Prevent accidental bucket deletion via Terraform |
+| `versioning` | object | Enabled | No | S3 bucket versioning configuration |
 | `server_side_encryption` | object | See below | No | Server-side encryption configuration |
 | `lifecycle_rules` | list(object) | `[]` | No | Lifecycle management rules |
 | `cors_rules` | list(object) | `[]` | No | CORS configuration rules |
@@ -278,6 +279,21 @@ module "s3_bucket" {
   enabled              = bool
   encryption_algorithm = string  # "AES256" or "aws:kms"
   kms_master_key_id    = string  # Required if using KMS
+}
+```
+
+### versioning Object
+
+```hcl
+{
+  enabled = bool
+}
+```
+
+**Default:**
+```hcl
+{
+  enabled = true
 }
 ```
 
@@ -382,7 +398,7 @@ module "s3_bucket" {
 | `bucket_domain_name` | The bucket domain name |
 | `bucket_regional_domain_name` | The bucket region-specific domain name |
 | `bucket_region` | The AWS region where the bucket was created |
-| `versioning_enabled` | Whether versioning is enabled (always true) |
+| `versioning_enabled` | Whether versioning is enabled |
 | `encryption_enabled` | Whether server-side encryption is enabled |
 | `encryption_algorithm` | The encryption algorithm used |
 | `is_private_bucket` | Whether public access is blocked |
@@ -491,7 +507,7 @@ output "replication_role" {
 
 ### Best Practices
 
-1. **Enable versioning** (automatic in this module) for data protection
+1. **Enable versioning** for data protection (enabled by default in this module)
 2. **Use KMS encryption** for sensitive data
 3. **Enable logging** for audit trails
 4. **Configure lifecycle rules** to optimize storage costs

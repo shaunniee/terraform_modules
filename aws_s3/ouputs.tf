@@ -29,7 +29,7 @@ output "bucket_region" {
 
 output "versioning_enabled" {
   description = "Whether versioning is enabled for the bucket"
-  value       = true
+  value       = var.versioning.enabled
 }
 
 # Encryption Output

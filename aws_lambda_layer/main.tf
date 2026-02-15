@@ -13,7 +13,6 @@ resource "aws_lambda_layer_version" "this" {
   license_info             = var.license_info
   compatible_runtimes      = var.compatible_runtimes
   compatible_architectures = var.compatible_architectures
-
   filename          = var.filename
   source_code_hash  = local.resolved_source_code_hash
   s3_bucket         = var.s3_bucket

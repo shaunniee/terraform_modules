@@ -1,63 +1,73 @@
 variable "bucket_name" {
-    description = "The name of the S3 bucket to create."
-    type        = string
+  description = "The name of the S3 bucket to create."
+  type        = string
 
-    validation {
-      condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.bucket_name))
-      error_message = "Bucket name must be between 3-63 characters, contain only lowercase letters, numbers, hyphens, and periods, and must start and end with a letter or number."
-    }
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.bucket_name))
+    error_message = "Bucket name must be between 3-63 characters, contain only lowercase letters, numbers, hyphens, and periods, and must start and end with a letter or number."
+  }
 
-    validation {
-      condition     = !can(regex("\\.\\.", var.bucket_name))
-      error_message = "Bucket name cannot contain consecutive periods (..)."
-    }
+  validation {
+    condition     = !can(regex("\\.\\.", var.bucket_name))
+    error_message = "Bucket name cannot contain consecutive periods (..)."
+  }
 
-    validation {
-      condition     = !can(regex("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$", var.bucket_name))
-      error_message = "Bucket name cannot be formatted as an IP address (e.g., 192.168.1.1)."
-    }
+  validation {
+    condition     = !can(regex("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$", var.bucket_name))
+    error_message = "Bucket name cannot be formatted as an IP address (e.g., 192.168.1.1)."
+  }
 }
 
 variable "force_destroy" {
-    description = "Whether to force destroy the S3 bucket."
-    type        = bool
-    default = false
+  description = "Whether to force destroy the S3 bucket."
+  type        = bool
+  default     = false
 }
 
 variable "private_bucket" {
-    description = "Whether to create a private S3 bucket."
-    type        = bool
-    default = true
+  description = "Whether to create a private S3 bucket."
+  type        = bool
+  default     = true
 }
 
 variable "prevent_destroy" {
-    description = "Whether to prevent destroy the S3 bucket."
-    type        = bool
-    default = true
+  description = "Whether to prevent destroy the S3 bucket."
+  type        = bool
+  default     = true
+}
+
+variable "versioning" {
+  description = "Versioning configuration for the S3 bucket."
+  type = object({
+    enabled = bool
+  })
+  default = {
+    enabled = true
+  }
 }
 
 variable "server_side_encryption" {
-    description = "Define server side encryption"
-    type =object({
-      enabled = bool
-      encryption_algorithm = string
-      kms_master_key_id = optional(string)
-    })
-    default = {
-      enabled = true
-      encryption_algorithm = "AES256"
-      kms_master_key_id = null
-    }
+  description = "Define server side encryption"
+  type = object({
+    enabled              = bool
+    encryption_algorithm = string
+    kms_master_key_id    = optional(string)
+  })
+  default = {
+    enabled              = true
+    encryption_algorithm = "AES256"
+    kms_master_key_id    = null
+  }
 
-    validation {
-      condition     = contains(["AES256", "aws:kms"], var.server_side_encryption.encryption_algorithm)
-      error_message = "encryption_algorithm must be either 'AES256' or 'aws:kms'."
-    }
+  validation {
+    condition     = contains(["AES256", "aws:kms"], var.server_side_encryption.encryption_algorithm)
+    error_message = "encryption_algorithm must be either 'AES256' or 'aws:kms'."
+  }
 
-    validation {
-      condition     = !var.server_side_encryption.enabled || (var.server_side_encryption.encryption_algorithm != "aws:kms" || var.server_side_encryption.kms_master_key_id != null)
-      error_message = "kms_master_key_id is required when encryption_algorithm is 'aws:kms'."
-    }
+  validation {
+    condition     = !var.server_side_encryption.enabled || (var.server_side_encryption.encryption_algorithm != "aws:kms" || var.server_side_encryption.kms_master_key_id != null)
+    error_message = "kms_master_key_id is required when encryption_algorithm is 'aws:kms'."
+  }
 }
 
 
@@ -77,14 +87,14 @@ variable "lifecycle_rules" {
       days          = number
       storage_class = string
     })), [])
-        noncurrent_version_transition = optional(list(object({
-        noncurrent_days = number
-        storage_class = string
-        })), [])
+    noncurrent_version_transition = optional(list(object({
+      noncurrent_days = number
+      storage_class   = string
+    })), [])
 
-        noncurrent_version_expiration = optional(list(object({
-          noncurrent_days = number
-        })), [])
+    noncurrent_version_expiration = optional(list(object({
+      noncurrent_days = number
+    })), [])
     expiration = optional(object({
       days                         = optional(number)
       expired_object_delete_marker = optional(bool)
@@ -156,25 +166,25 @@ variable "cors_rules" {
 }
 
 variable "logging" {
-    description = "Logging configuration for the S3 bucket. Leave empty to disable logging."
-    type = object({
-        enabled = bool
-        managed_bucket = bool
-        target_bucket = optional(string, "")
-        target_prefix = optional(string, "")
-    })
-    default = {
-        enabled = false
-        managed_bucket = true
-        target_bucket = ""
-        target_prefix = ""
-     }
+  description = "Logging configuration for the S3 bucket. Leave empty to disable logging."
+  type = object({
+    enabled        = bool
+    managed_bucket = bool
+    target_bucket  = optional(string, "")
+    target_prefix  = optional(string, "")
+  })
+  default = {
+    enabled        = false
+    managed_bucket = true
+    target_bucket  = ""
+    target_prefix  = ""
+  }
 
-     validation {
-       condition = !(var.logging.enabled && !var.logging.managed_bucket && var.logging.target_bucket == "")
-       error_message = "If logging is enabled and not using a managed bucket, target_bucket must be provided."
-     }
-  
+  validation {
+    condition     = !(var.logging.enabled && !var.logging.managed_bucket && var.logging.target_bucket == "")
+    error_message = "If logging is enabled and not using a managed bucket, target_bucket must be provided."
+  }
+
 }
 
 variable "replication" {
@@ -182,11 +192,11 @@ variable "replication" {
   type = object({
     role_arn = optional(string, "")
     rules = list(object({
-      id     = string
-      prefix = optional(string, "")
-      status = string
+      id                     = string
+      prefix                 = optional(string, "")
+      status                 = string
       destination_bucket_arn = string
-      storage_class = string
+      storage_class          = string
     }))
   })
   default = null
