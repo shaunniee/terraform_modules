@@ -199,3 +199,39 @@ variable "log_group_kms_key_arn" {
     error_message = "log_group_kms_key_arn must be a valid KMS key ARN."
   }
 }
+
+variable "aliases" {
+  description = "Lambda aliases keyed by alias name."
+  type = map(object({
+    description                        = optional(string)
+    function_version                   = optional(string)
+    routing_additional_version_weights = optional(map(number), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for alias_name in keys(var.aliases) :
+      can(regex("^(?![0-9]+$)[a-zA-Z0-9-_]{1,128}$", alias_name))
+    ])
+    error_message = "Alias names must be 1-128 characters, use letters/numbers/hyphens/underscores, and cannot be only digits."
+  }
+
+  validation {
+    condition = alltrue([
+      for cfg in values(var.aliases) :
+      try(cfg.function_version, null) == null || can(regex("^[0-9]+$", cfg.function_version))
+    ])
+    error_message = "aliases[*].function_version must be null or a published numeric Lambda version."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for cfg in values(var.aliases) : [
+        for weight in values(try(cfg.routing_additional_version_weights, {})) :
+        weight > 0 && weight < 1
+      ]
+    ]))
+    error_message = "aliases[*].routing_additional_version_weights values must be between 0 and 1 (exclusive)."
+  }
+}

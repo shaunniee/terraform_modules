@@ -32,3 +32,13 @@ output "cloudwatch_log_group_name" {
   description = "CloudWatch log group name when create_cloudwatch_log_group is true, else null."
   value       = var.create_cloudwatch_log_group ? aws_cloudwatch_log_group.lambda[0].name : null
 }
+
+output "lambda_alias_arns" {
+  description = "Map of Lambda alias ARNs keyed by alias name."
+  value       = { for k, v in aws_lambda_alias.this : k => v.arn }
+}
+
+output "lambda_alias_invoke_arns" {
+  description = "Map of Lambda alias invoke ARNs keyed by alias name."
+  value       = { for k, v in aws_lambda_alias.this : k => v.invoke_arn }
+}

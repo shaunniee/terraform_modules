@@ -7,6 +7,7 @@ Terraform module for creating a Lambda function with:
 - Architectures, layers, ephemeral storage, reserved concurrency
 - Optional KMS encryption for Lambda environment variables
 - Optional managed CloudWatch log group with retention + KMS
+- Optional Lambda aliases (including weighted routing)
 
 ## Basic Usage
 
@@ -79,6 +80,34 @@ module "lambda" {
 }
 ```
 
+## Alias Example
+
+```hcl
+module "lambda" {
+  source = "./aws_lambda"
+
+  function_name = "payments-handler"
+  runtime       = "python3.12"
+  handler       = "app.lambda_handler"
+  filename      = "build/payments-handler.zip"
+  publish       = true
+
+  aliases = {
+    live = {
+      description      = "Production alias"
+      function_version = null
+    }
+    canary = {
+      description      = "Canary traffic split"
+      function_version = "12"
+      routing_additional_version_weights = {
+        "13" = 0.1
+      }
+    }
+  }
+}
+```
+
 ## Inputs
 
 | Variable | Type | Default | Required | Description |
@@ -100,6 +129,7 @@ module "lambda" {
 | `create_cloudwatch_log_group` | bool | `true` | No | Create CloudWatch log group |
 | `log_retention_in_days` | number | `14` | No | CloudWatch retention value |
 | `log_group_kms_key_arn` | string | `null` | No | KMS key ARN for log group encryption |
+| `aliases` | map(object) | `{}` | No | Lambda aliases keyed by alias name |
 | `environment_variables` | map(string) | `{}` | No | Lambda environment variables |
 | `dead_letter_target_arn` | string | `null` | No | SQS/SNS ARN for failed async invocations |
 | `tags` | map(string) | `{}` | No | Resource tags |
@@ -115,3 +145,5 @@ module "lambda" {
 | `lambda_version` | Published version / version reference |
 | `lambda_arn` | Lambda function ARN |
 | `cloudwatch_log_group_name` | Log group name when module creates it |
+| `lambda_alias_arns` | Map of alias ARNs keyed by alias name |
+| `lambda_alias_invoke_arns` | Map of alias invoke ARNs keyed by alias name |
