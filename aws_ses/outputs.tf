@@ -18,6 +18,7 @@ output "email_identity_arns" {
   value       = { for e, r in aws_ses_email_identity.email : e => r.arn }
 }
 
+
 output "configuration_set_names" {
   description = "List of SES configuration set names created."
   value       = [for _, r in aws_ses_configuration_set.this : r.name]
