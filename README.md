@@ -9,9 +9,11 @@ Reusable Terraform modules for common AWS infrastructure patterns.
 | `aws_s3` | S3 bucket with encryption, lifecycle, CORS, logging, replication | `aws_s3/usage.md` |
 | `aws_ssm` | SSM Parameter Store module for plain and secure parameters with validation and policy support | `aws_ssm/usage.md` |
 | `aws_dynamodb` | Dynamic DynamoDB table module with billing modes, GSIs/LSIs, TTL, streams, PITR, and SSE | `aws_dynamodb/usage.md` |
+| `aws_ses` | Dynamic SES module for identities, DKIM, MAIL FROM, policies, configuration sets, event destinations, and templates | `aws_ses/usage.md` |
 | `aws_cloudfront` | CloudFront distribution with multi-origin support, SPA fallback, signed URLs, custom domains, WAF, logging | `aws_cloudfront/usage.md` |
 | `aws_lambda` | Lambda function with optional managed IAM role, layers, KMS, concurrency controls, and log group management | `aws_lambda/usage.md` |
 | `aws_lambda_layer` | Reusable Lambda layer publishing module with local/S3 sources and sharing permissions | `aws_lambda_layer/usage.md` |
+| `aws_eventbridge` | Dynamic EventBridge module for buses, rules, targets, retries, DLQ, and optional Lambda invoke permissions | `aws_eventbridge/usage.md` |
 | `aws_api_gateway_rest_api` | Dynamic REST API Gateway with submodules for resources, methods, integrations, responses, stage, logs, and optional custom domain | `aws_api_gateway_rest_api/usage.md` |
 
 ## Prerequisites
