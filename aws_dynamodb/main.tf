@@ -30,14 +30,10 @@ resource "aws_dynamodb_table" "this" {
     for_each = var.global_secondary_indexes
     content {
       name = global_secondary_index.value.name
-      key_schema {
-        attribute_name = global_secondary_index.value.hash_key
-        key_type       = "HASH"
-      }
-      key_schema {
-        attribute_name = try(global_secondary_index.value.range_key, null)
-        key_type       = "RANGE"
-      }
+
+        hash_key = global_secondary_index.value.hash_key
+        range_key = try(global_secondary_index.value.range_key, null)
+    
 
       projection_type    = global_secondary_index.value.projection_type
       non_key_attributes = global_secondary_index.value.projection_type == "INCLUDE" ? global_secondary_index.value.non_key_attributes : null
