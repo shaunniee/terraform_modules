@@ -54,5 +54,4 @@ resource "aws_lambda_layer_version_permission" "this" {
   action          = each.value.action
   principal       = each.value.principal
   organization_id = try(each.value.organization_id, null)
-  skip_destroy    = try(each.value.skip_destroy, false)
 }

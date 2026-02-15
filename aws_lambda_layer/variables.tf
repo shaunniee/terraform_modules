@@ -76,7 +76,6 @@ variable "permissions" {
     action          = optional(string, "lambda:GetLayerVersion")
     principal       = string
     organization_id = optional(string)
-    skip_destroy    = optional(bool, false)
   }))
   default = []
 
