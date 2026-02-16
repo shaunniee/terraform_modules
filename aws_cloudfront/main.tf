@@ -18,7 +18,7 @@ locals {
 
 # Origin Access Control for private buckets
 resource "aws_cloudfront_origin_access_control" "this" {
-  for_each = { for k, o in var.origins : k => o if o.is_private_origin }
+  for_each = { for k, o in var.origins : k => o if o.is_private_origin && lower(try(o.origin_type, "s3")) == "s3" }
 
   name                              = "${var.distribution_name}-oac-${each.key}"
   origin_access_control_origin_type = "s3"
@@ -96,6 +96,14 @@ resource "aws_cloudfront_distribution" "this" {
       ])
       error_message = "kms_key_arn is required when any ordered cache behavior has requires_signed_url = true."
     }
+
+    precondition {
+      condition = alltrue([
+        for o in values(var.origins) :
+        !o.is_private_origin || lower(try(o.origin_type, "s3")) == "s3"
+      ])
+      error_message = "is_private_origin can only be true for origins with origin_type = s3."
+    }
   }
 
   # Origins
@@ -104,23 +112,49 @@ resource "aws_cloudfront_distribution" "this" {
     content {
       domain_name = origin.value.domain_name
       origin_id   = origin.value.origin_id
+      origin_path = try(origin.value.origin_path, null)
 
       origin_access_control_id = (
-        origin.value.is_private_origin
+        origin.value.is_private_origin && lower(try(origin.value.origin_type, "s3")) == "s3"
         ? aws_cloudfront_origin_access_control.this[origin.key].id
         : null
       )
+
+      dynamic "s3_origin_config" {
+        for_each = lower(try(origin.value.origin_type, "s3")) == "s3" ? [1] : []
+        content {
+          origin_access_identity = ""
+        }
+      }
+
+      dynamic "custom_origin_config" {
+        for_each = lower(try(origin.value.origin_type, "s3")) == "custom" ? [origin.value.custom_origin_config] : []
+        content {
+          http_port              = try(custom_origin_config.value.http_port, 80)
+          https_port             = try(custom_origin_config.value.https_port, 443)
+          origin_protocol_policy = try(custom_origin_config.value.origin_protocol_policy, "https-only")
+          origin_ssl_protocols   = try(custom_origin_config.value.origin_ssl_protocols, ["TLSv1.2"])
+          origin_read_timeout    = try(custom_origin_config.value.origin_read_timeout, 30)
+          origin_keepalive_timeout = try(custom_origin_config.value.origin_keepalive_timeout, 5)
+        }
+      }
     }
   }
 
   # Default cache behavior
   default_cache_behavior {
     target_origin_id         = local.default_cache_behavior_input.target_origin_id
-    viewer_protocol_policy   = "redirect-to-https"
-    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
-    cached_methods           = ["GET", "HEAD"]
-    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_optimized.id
-    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.s3_origin.id
+    viewer_protocol_policy   = try(local.default_cache_behavior_input.viewer_protocol_policy, "redirect-to-https")
+    allowed_methods          = try(local.default_cache_behavior_input.allowed_methods, ["GET", "HEAD", "OPTIONS"])
+    cached_methods           = try(local.default_cache_behavior_input.cached_methods, ["GET", "HEAD"])
+    cache_policy_id = coalesce(
+      try(local.default_cache_behavior_input.cache_policy_id, null),
+      data.aws_cloudfront_cache_policy.caching_optimized.id
+    )
+    origin_request_policy_id = coalesce(
+      try(local.default_cache_behavior_input.origin_request_policy_id, null),
+      data.aws_cloudfront_origin_request_policy.s3_origin.id
+    )
   }
 
   # Ordered cache behaviors
@@ -129,18 +163,22 @@ resource "aws_cloudfront_distribution" "this" {
     content {
       path_pattern           = ordered_cache_behavior.value.path_pattern
       target_origin_id       = ordered_cache_behavior.value.target_origin_id
-      viewer_protocol_policy = "redirect-to-https"
+      viewer_protocol_policy = try(ordered_cache_behavior.value.viewer_protocol_policy, "redirect-to-https")
 
       allowed_methods = ordered_cache_behavior.value.allowed_methods
       cached_methods  = ordered_cache_behavior.value.cached_methods
 
-      cache_policy_id = (
+      cache_policy_id = coalesce(
+        try(ordered_cache_behavior.value.cache_policy_id, null),
         ordered_cache_behavior.value.cache_disabled
         ? data.aws_cloudfront_cache_policy.caching_disabled.id
         : data.aws_cloudfront_cache_policy.caching_optimized.id
       )
 
-      origin_request_policy_id = data.aws_cloudfront_origin_request_policy.s3_origin.id
+      origin_request_policy_id = coalesce(
+        try(ordered_cache_behavior.value.origin_request_policy_id, null),
+        data.aws_cloudfront_origin_request_policy.s3_origin.id
+      )
 
       trusted_key_groups = (
         lookup(ordered_cache_behavior.value, "requires_signed_url", false) && var.kms_key_arn != null

@@ -177,9 +177,9 @@ variable "callback_urls" {
 
   validation {
     condition = alltrue([
-      for url in var.callback_urls : can(regex("^(https?://|myapp://).+", url))
+      for url in var.callback_urls : can(regex("^[a-z][a-z0-9+.-]*://.+", lower(url)))
     ])
-    error_message = "Each callback URL must begin with http://, https://, or a custom scheme such as myapp://."
+    error_message = "Each callback URL must use a valid URI scheme (for example: https://..., http://..., myapp://...)."
   }
 }
 
@@ -190,9 +190,9 @@ variable "logout_urls" {
 
   validation {
     condition = alltrue([
-      for url in var.logout_urls : can(regex("^(https?://|myapp://).+", url))
+      for url in var.logout_urls : can(regex("^[a-z][a-z0-9+.-]*://.+", lower(url)))
     ])
-    error_message = "Each logout URL must begin with http://, https://, or a custom scheme such as myapp://."
+    error_message = "Each logout URL must use a valid URI scheme (for example: https://..., http://..., myapp://...)."
   }
 }
 

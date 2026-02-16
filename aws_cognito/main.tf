@@ -22,7 +22,7 @@ resource "aws_cognito_user_pool" "this" {
   }
 
   dynamic "lambda_config" {
-    for_each = var.lambda_triggers
+    for_each = length(var.lambda_triggers) > 0 ? [1] : []
     content {
       pre_sign_up          = lookup(var.lambda_triggers, "pre_sign_up", null)
       post_confirmation    = lookup(var.lambda_triggers, "post_confirmation", null)
@@ -45,6 +45,13 @@ resource "aws_cognito_user_pool_client" "this" {
   name         = var.client_name
   user_pool_id = aws_cognito_user_pool.this.id
   generate_secret = var.generate_secret
+
+  allowed_oauth_flows_user_pool_client = (
+    length(var.allowed_oauth_flows) > 0 ||
+    length(var.allowed_oauth_scopes) > 0 ||
+    length(var.callback_urls) > 0 ||
+    length(var.logout_urls) > 0
+  )
 
   allowed_oauth_flows           = var.allowed_oauth_flows
   allowed_oauth_scopes          = var.allowed_oauth_scopes
