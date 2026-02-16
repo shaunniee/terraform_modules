@@ -11,9 +11,13 @@ Reusable Terraform modules for common AWS infrastructure patterns.
 | `aws_dynamodb` | Dynamic DynamoDB table module with billing modes, GSIs/LSIs, TTL, streams, PITR, and SSE | `aws_dynamodb/usage.md` |
 | `aws_ses` | Dynamic SES module for identities, DKIM, MAIL FROM, policies, configuration sets, event destinations, and templates | `aws_ses/usage.md` |
 | `aws_cloudfront` | CloudFront distribution with multi-origin support, SPA fallback, signed URLs, custom domains, WAF, logging | `aws_cloudfront/usage.md` |
+| `aws_acm` | ACM certificate module for single/multiple certificates with optional Route53 DNS validation records | `aws_acm/usage.md` |
+| `aws_cognito` | Cognito User Pool and User Pool Client module with optional Identity Pool, domain, and Lambda triggers | `aws_cognito/usage.md` |
+| `aws_kms` | KMS key and alias module for creating multiple keys with rotation, deletion window, and optional policy | `aws_kms/usage.md` |
 | `aws_lambda` | Lambda function with optional managed IAM role, layers, KMS, concurrency controls, and log group management | `aws_lambda/usage.md` |
 | `aws_lambda_layer` | Reusable Lambda layer publishing module with local/S3 sources and sharing permissions | `aws_lambda_layer/usage.md` |
 | `aws_eventbridge` | Dynamic EventBridge module for buses, rules, targets, retries, DLQ, and optional Lambda invoke permissions | `aws_eventbridge/usage.md` |
+| `aws_sqs` | SQS queue module with optional dead-letter queue and redrive policy wiring | `aws_sqs/usage.md` |
 | `aws_api_gateway_rest_api` | Dynamic REST API Gateway with submodules for resources, methods, integrations, responses, stage, logs, and optional custom domain | `aws_api_gateway_rest_api/usage.md` |
 
 ## Prerequisites

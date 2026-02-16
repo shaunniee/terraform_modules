@@ -2,7 +2,7 @@ resource "aws_api_gateway_resource" "this" {
   for_each = var.resources
 
   rest_api_id = var.rest_api_id
-  parent_id   = local.resource_ids_with_root[each.value.parent_key]
+  parent_id   = local.resource_ids_with_root[coalesce(try(each.value.parent_key, null), "__root__")]
   path_part   = each.value.path_part
 }
 

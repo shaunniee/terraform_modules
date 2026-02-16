@@ -122,6 +122,14 @@ variable "methods" {
     ])
     error_message = "methods[*].resource_key must reference an existing resources key when provided."
   }
+
+  validation {
+    condition = alltrue([
+      for m in values(var.methods) :
+      !contains(["CUSTOM", "COGNITO_USER_POOLS"], try(m.authorization, "NONE")) || (try(m.authorizer_id, null) != null && trimspace(try(m.authorizer_id, "")) != "")
+    ])
+    error_message = "methods[*].authorizer_id is required when authorization is CUSTOM or COGNITO_USER_POOLS."
+  }
 }
 
 variable "integrations" {
@@ -155,6 +163,38 @@ variable "integrations" {
       for i in values(var.integrations) : contains(["HTTP", "HTTP_PROXY", "AWS", "AWS_PROXY", "MOCK"], i.type)
     ])
     error_message = "integrations[*].type must be one of HTTP, HTTP_PROXY, AWS, AWS_PROXY, MOCK."
+  }
+
+  validation {
+    condition = alltrue([
+      for i in values(var.integrations) :
+      i.type == "MOCK" || (try(i.integration_http_method, null) != null && trimspace(try(i.integration_http_method, "")) != "")
+    ])
+    error_message = "integrations[*].integration_http_method is required for non-MOCK integrations."
+  }
+
+  validation {
+    condition = alltrue([
+      for i in values(var.integrations) :
+      i.type == "MOCK" || (try(i.uri, null) != null && trimspace(try(i.uri, "")) != "")
+    ])
+    error_message = "integrations[*].uri is required for non-MOCK integrations."
+  }
+
+  validation {
+    condition = alltrue([
+      for i in values(var.integrations) :
+      try(i.connection_type, null) == null || contains(["INTERNET", "VPC_LINK"], i.connection_type)
+    ])
+    error_message = "integrations[*].connection_type must be INTERNET or VPC_LINK when provided."
+  }
+
+  validation {
+    condition = alltrue([
+      for i in values(var.integrations) :
+      try(i.connection_type, null) != "VPC_LINK" || (try(i.connection_id, null) != null && trimspace(try(i.connection_id, "")) != "")
+    ])
+    error_message = "integrations[*].connection_id is required when connection_type is VPC_LINK."
   }
 
   validation {
@@ -253,12 +293,24 @@ variable "cache_cluster_enabled" {
   description = "Enable cache cluster for stage."
   type        = bool
   default     = false
+
+  validation {
+    condition     = !var.cache_cluster_enabled || var.cache_cluster_size != null
+    error_message = "cache_cluster_size is required when cache_cluster_enabled is true."
+  }
 }
 
 variable "cache_cluster_size" {
   description = "Cache cluster size when enabled."
   type        = string
   default     = null
+
+  validation {
+    condition = var.cache_cluster_size == null || contains([
+      "0.5", "1.6", "6.1", "13.5", "28.4", "58.2", "118", "237"
+    ], var.cache_cluster_size)
+    error_message = "cache_cluster_size must be one of: 0.5, 1.6, 6.1, 13.5, 28.4, 58.2, 118, 237."
+  }
 }
 
 variable "method_settings" {
@@ -349,7 +401,7 @@ variable "create_domain_name" {
   default     = false
 
   validation {
-    condition     = !var.create_domain_name || (var.domain_name != null && var.certificate_arn != null)
+    condition     = !var.create_domain_name || (var.domain_name != null && trimspace(var.domain_name) != "" && var.certificate_arn != null && trimspace(var.certificate_arn) != "")
     error_message = "When create_domain_name is true, domain_name and certificate_arn are required."
   }
 }
@@ -358,6 +410,11 @@ variable "domain_name" {
   description = "Custom domain name for API Gateway."
   type        = string
   default     = null
+
+  validation {
+    condition     = var.domain_name == null || trimspace(var.domain_name) != ""
+    error_message = "domain_name must be null or a non-empty string."
+  }
 }
 
 variable "certificate_arn" {
@@ -368,6 +425,11 @@ variable "certificate_arn" {
   validation {
     condition     = var.certificate_arn == null || can(regex("^arn:aws[a-zA-Z-]*:acm:[a-z0-9-]+:[0-9]{12}:certificate\\/.+$", var.certificate_arn))
     error_message = "certificate_arn must be a valid ACM certificate ARN."
+  }
+
+  validation {
+    condition     = var.certificate_arn == null || trimspace(var.certificate_arn) != ""
+    error_message = "certificate_arn must be null or a non-empty string."
   }
 }
 
@@ -399,7 +461,7 @@ variable "create_route53_record" {
   }
 
   validation {
-    condition     = !var.create_route53_record || var.hosted_zone_id != null
+    condition     = !var.create_route53_record || (var.hosted_zone_id != null && trimspace(var.hosted_zone_id) != "")
     error_message = "hosted_zone_id is required when create_route53_record is true."
   }
 }
@@ -408,10 +470,20 @@ variable "hosted_zone_id" {
   description = "Route53 hosted zone ID for alias record."
   type        = string
   default     = null
+
+  validation {
+    condition     = var.hosted_zone_id == null || trimspace(var.hosted_zone_id) != ""
+    error_message = "hosted_zone_id must be null or a non-empty string."
+  }
 }
 
 variable "record_name" {
   description = "Route53 record name. Defaults to domain_name when null."
   type        = string
   default     = null
+
+  validation {
+    condition     = var.record_name == null || trimspace(var.record_name) != ""
+    error_message = "record_name must be null or a non-empty string."
+  }
 }
