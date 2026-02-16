@@ -32,3 +32,13 @@ output "local_secondary_index_names" {
   description = "Configured local secondary index names."
   value       = [for l in var.local_secondary_indexes : l.name]
 }
+
+output "configured_replica_regions" {
+  description = "Configured DynamoDB global table replica regions."
+  value       = [for r in var.replicas : r.region_name]
+}
+
+output "replica_regions" {
+  description = "Replica regions reported by AWS for the table."
+  value       = [for r in aws_dynamodb_table.this.replica : r.region_name]
+}

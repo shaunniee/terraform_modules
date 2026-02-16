@@ -52,6 +52,14 @@ resource "aws_dynamodb_table" "this" {
     }
   }
 
+  dynamic "replica" {
+    for_each = var.replicas
+    content {
+      region_name = replica.value.region_name
+      kms_key_arn = try(replica.value.kms_key_arn, null)
+    }
+  }
+
   dynamic "ttl" {
     for_each = var.ttl.enabled ? [1] : []
     content {
@@ -136,6 +144,16 @@ resource "aws_dynamodb_table" "this" {
     precondition {
       condition     = var.stream_enabled || var.stream_view_type == null
       error_message = "stream_view_type must be null when stream_enabled = false."
+    }
+
+    precondition {
+      condition     = length(var.replicas) == 0 || var.stream_enabled
+      error_message = "DynamoDB global tables require stream_enabled = true when replicas are configured."
+    }
+
+    precondition {
+      condition     = length(var.replicas) == 0 || var.stream_view_type == "NEW_AND_OLD_IMAGES"
+      error_message = "DynamoDB global tables require stream_view_type = NEW_AND_OLD_IMAGES when replicas are configured."
     }
 
     precondition {

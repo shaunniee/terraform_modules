@@ -163,6 +163,35 @@ variable "local_secondary_indexes" {
   }
 }
 
+variable "replicas" {
+  description = "Replica regions for DynamoDB global tables."
+  type = list(object({
+    region_name = string
+    kms_key_arn = optional(string)
+  }))
+  default = []
+
+  validation {
+    condition     = length(distinct([for r in var.replicas : r.region_name])) == length(var.replicas)
+    error_message = "replicas region_name values must be unique."
+  }
+
+  validation {
+    condition = alltrue([
+      for r in var.replicas : can(regex("^[a-z]{2}-[a-z]+-[0-9]+$", r.region_name))
+    ])
+    error_message = "replicas[*].region_name must look like a valid AWS region (for example: us-east-1)."
+  }
+
+  validation {
+    condition = alltrue([
+      for r in var.replicas :
+      try(r.kms_key_arn, null) == null || can(regex("^arn:aws[a-zA-Z-]*:kms:[a-z0-9-]+:[0-9]{12}:key\\/.+$", r.kms_key_arn))
+    ])
+    error_message = "replicas[*].kms_key_arn must be a valid KMS key ARN when provided."
+  }
+}
+
 variable "ttl" {
   description = "TTL configuration for the table."
   type = object({
