@@ -1,0 +1,98 @@
+resource "aws_route53_zone" "this" {
+  for_each = var.zones
+
+  name    = each.value.domain_name
+  comment = lookup(each.value, "comment", null)
+
+  dynamic "vpc" {
+    for_each = each.value.private ? each.value.vpc_ids : []
+    content {
+      vpc_id = vpc.value
+    }
+  }
+}
+
+resource "aws_route53_health_check" "this" {
+  for_each = var.health_checks
+
+  type              = each.value.type
+  fqdn              = each.value.fqdn
+  port              = lookup(each.value, "port", null)
+  resource_path     = lookup(each.value, "resource_path", null)
+  request_interval  = each.value.request_interval
+  failure_threshold = each.value.failure_threshold
+  measure_latency   = each.value.measure_latency
+
+  regions           = lookup(each.value, "regions", null)
+  tags = {
+    Name = each.key
+  }
+}
+
+locals {
+  flat_records = flatten([
+    for zone_key, zone_records in var.records : [
+      for record_name, record in zone_records : {
+        zone_key   = zone_key
+        name       = record_name
+        config     = record
+      }
+    ]
+  ])
+}
+resource "aws_route53_record" "this" {
+  for_each = {
+    for r in local.flat_records :
+    "${r.zone_key}-${r.name}-${lookup(r.config.routing_policy, "set_identifier", "default")}" => r
+  }
+
+  zone_id = aws_route53_zone.this[each.value.zone_key].zone_id
+  name    = each.value.name
+  type    = each.value.config.type
+
+  ttl     = lookup(each.value.config, "ttl", null)
+  records = lookup(each.value.config, "values", null)
+
+  dynamic "alias" {
+    for_each = each.value.config.alias != null ? [each.value.config.alias] : []
+    content {
+      name                   = alias.value.name
+      zone_id               = alias.value.zone_id
+      evaluate_target_health = alias.value.evaluate_target_health
+    }
+  }
+
+  set_identifier = lookup(each.value.config.routing_policy, "set_identifier", null)
+
+  dynamic "weighted_routing_policy" {
+    for_each = lookup(each.value.config.routing_policy, "type", "") == "weighted" ? [1] : []
+    content {
+      weight = each.value.config.routing_policy.weight
+    }
+  }
+
+  dynamic "latency_routing_policy" {
+    for_each = lookup(each.value.config.routing_policy, "type", "") == "latency" ? [1] : []
+    content {
+      region = each.value.config.routing_policy.region
+    }
+  }
+
+  dynamic "failover_routing_policy" {
+    for_each = lookup(each.value.config.routing_policy, "type", "") == "failover" ? [1] : []
+    content {
+      type = each.value.config.routing_policy.failover
+    }
+  }
+
+  dynamic "geolocation_routing_policy" {
+    for_each = lookup(each.value.config.routing_policy, "type", "") == "geolocation" ? [1] : []
+    content {
+      continent   = lookup(each.value.config.routing_policy, "continent", null)
+      country     = lookup(each.value.config.routing_policy, "country", null)
+      subdivision = lookup(each.value.config.routing_policy, "subdivision", null)
+    }
+  }
+
+  health_check_id = lookup(each.value.config.routing_policy, "health_check_id", null)
+}
