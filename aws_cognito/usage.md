@@ -1,4 +1,4 @@
-````markdown
+
 # AWS Cognito Terraform Module
 
 Reusable module for provisioning Cognito authentication primitives:
@@ -160,4 +160,3 @@ The following keys are supported in `lambda_triggers`:
 - User Pool Domain is created only when `create_domain = true`.
 - Output values for optional resources resolve to `null` when those resources are not created.
 
-````

@@ -1,4 +1,4 @@
-````markdown
+
 # AWS ACM Terraform Module
 
 Reusable module for creating one or more ACM certificates with optional DNS validation records in Route 53.
@@ -106,4 +106,4 @@ This module currently does not define outputs in outputs.tf.
 - create_before_destroy is enabled for aws_acm_certificate to reduce replacement downtime risk.
 - For EMAIL validation, Route 53 validation records are not created.
 
-````
+

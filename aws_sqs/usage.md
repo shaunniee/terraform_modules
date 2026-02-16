@@ -1,4 +1,4 @@
-````markdown
+
 # AWS SQS Terraform Module
 
 Reusable module for creating an SQS queue with optional dead-letter queue (DLQ).
@@ -90,4 +90,4 @@ module "sqs" {
   - No DLQ resources are created.
   - `dlq_arn` and `dlq_url` outputs are `null`.
 
-````
+

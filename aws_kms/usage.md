@@ -1,4 +1,4 @@
-````markdown
+
 # AWS KMS Terraform Module
 
 Reusable module for creating one or more AWS KMS keys and aliases from a single map input.
@@ -103,4 +103,3 @@ module "kms" {
 - The module creates one `aws_kms_key` and one `aws_kms_alias` per entry in `keys`.
 - If `keys` is empty, no resources are created and outputs are empty maps.
 
-````
