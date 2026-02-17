@@ -5,6 +5,11 @@ output "bucket_id" {
   value       = var.prevent_destroy ? aws_s3_bucket.protected[0].id : aws_s3_bucket.unprotected[0].id
 }
 
+output "bucket_name" {
+  description = "The name of the S3 bucket"
+  value       = var.prevent_destroy ? aws_s3_bucket.protected[0].bucket : aws_s3_bucket.unprotected[0].bucket
+}
+
 output "bucket_arn" {
   description = "The ARN of the S3 bucket"
   value       = var.prevent_destroy ? aws_s3_bucket.protected[0].arn : aws_s3_bucket.unprotected[0].arn
