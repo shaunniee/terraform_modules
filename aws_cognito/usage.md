@@ -53,6 +53,9 @@ module "cognito" {
   user_pool_name = "app-users"
   client_name    = "app-client"
 
+  # Default explicit auth flows are:
+  # ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
+
   tags = {
     Environment = "dev"
     ManagedBy   = "terraform"
@@ -244,6 +247,7 @@ module "cognito_full" {
 | `lambda_triggers` | map(string) | `{}` | No | Lambda trigger ARNs keyed by supported trigger key |
 | `client_name` | string | - | Yes | User Pool Client name |
 | `generate_secret` | bool | `false` | No | Generate app client secret |
+| `explicit_auth_flows` | list(string) | `["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]` | No | User Pool Client explicit auth flows |
 | `allowed_oauth_flows` | list(string) | `[]` | No | OAuth flows: `code`, `implicit`, `client_credentials` |
 | `allowed_oauth_scopes` | list(string) | `[]` | No | OAuth scopes |
 | `callback_urls` | list(string) | `[]` | No | OAuth callback URLs (must have valid URI scheme) |
@@ -280,6 +284,7 @@ module "cognito_full" {
 - `lambda_triggers` supports only approved keys.
 - `lambda_triggers` values must be valid Lambda ARNs.
 - `allowed_oauth_flows` values must be valid and unique.
+- `explicit_auth_flows` values must be valid and unique.
 - `allowed_oauth_scopes` values must be non-empty and unique.
 - `supported_identity_providers` values must be non-empty and unique.
 - `prevent_user_existence_errors` must be `ENABLED` or `LEGACY`.
@@ -307,6 +312,7 @@ module "cognito_full" {
 - Hosted UI domain is created only when `create_domain = true`.
 - `lambda_config` is added only when `lambda_triggers` is non-empty.
 - OAuth app client mode (`allowed_oauth_flows_user_pool_client`) is auto-enabled when any OAuth-related fields are provided (`allowed_oauth_flows`, scopes, callback URLs, logout URLs).
+- App client auth flows default to username/password + refresh token, and can be overridden with `explicit_auth_flows`.
 - Optional outputs resolve to `null` when related resources are not created.
 
 ---

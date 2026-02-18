@@ -45,6 +45,7 @@ resource "aws_cognito_user_pool_client" "this" {
   name         = var.client_name
   user_pool_id = aws_cognito_user_pool.this.id
   generate_secret = var.generate_secret
+  explicit_auth_flows = var.explicit_auth_flows
 
   allowed_oauth_flows_user_pool_client = (
     length(var.allowed_oauth_flows) > 0 ||

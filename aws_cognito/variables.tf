@@ -138,6 +138,30 @@ variable "generate_secret" {
   default     = false
 }
 
+variable "explicit_auth_flows" {
+  description = "Explicit authentication flows for the user pool client."
+  type        = list(string)
+  default     = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
+
+  validation {
+    condition     = length(distinct(var.explicit_auth_flows)) == length(var.explicit_auth_flows)
+    error_message = "explicit_auth_flows must not contain duplicate values."
+  }
+
+  validation {
+    condition = alltrue([
+      for flow in var.explicit_auth_flows : contains([
+        "ALLOW_ADMIN_USER_PASSWORD_AUTH",
+        "ALLOW_CUSTOM_AUTH",
+        "ALLOW_REFRESH_TOKEN_AUTH",
+        "ALLOW_USER_PASSWORD_AUTH",
+        "ALLOW_USER_SRP_AUTH"
+      ], flow)
+    ])
+    error_message = "explicit_auth_flows can only include: ALLOW_ADMIN_USER_PASSWORD_AUTH, ALLOW_CUSTOM_AUTH, ALLOW_REFRESH_TOKEN_AUTH, ALLOW_USER_PASSWORD_AUTH, ALLOW_USER_SRP_AUTH."
+  }
+}
+
 variable "allowed_oauth_flows" {
   description = "OAuth flows enabled for the user pool client."
   type        = list(string)
