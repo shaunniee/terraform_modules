@@ -155,6 +155,14 @@ resource "aws_cloudfront_distribution" "this" {
       try(local.default_cache_behavior_input.origin_request_policy_id, null),
       data.aws_cloudfront_origin_request_policy.s3_origin.id
     )
+
+    dynamic "function_association" {
+      for_each = try(local.default_cache_behavior_input.function_associations, {})
+      content {
+        event_type   = try(function_association.value.event_type, "viewer-request")
+        function_arn = function_association.value.function_arn
+      }
+    }
   }
 
   # Ordered cache behaviors
@@ -179,6 +187,14 @@ resource "aws_cloudfront_distribution" "this" {
         try(ordered_cache_behavior.value.origin_request_policy_id, null),
         data.aws_cloudfront_origin_request_policy.s3_origin.id
       )
+
+      dynamic "function_association" {
+        for_each = try(ordered_cache_behavior.value.function_associations, {})
+        content {
+          event_type   = try(function_association.value.event_type, "viewer-request")
+          function_arn = function_association.value.function_arn
+        }
+      }
 
       trusted_key_groups = (
         lookup(ordered_cache_behavior.value, "requires_signed_url", false) && var.kms_key_arn != null

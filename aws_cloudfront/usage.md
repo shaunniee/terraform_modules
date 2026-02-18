@@ -259,6 +259,81 @@ module "cloudfront_policy_override" {
 
 ---
 
+### Scenario G: Keep `/api/*` Path and Rewrite Before API Gateway
+
+Use a CloudFront Function on the `/api/*` behavior to strip the `/api` prefix before forwarding to API Gateway.
+
+```hcl
+resource "aws_cloudfront_function" "strip_api_prefix" {
+  name    = "strip-api-prefix"
+  runtime = "cloudfront-js-1.0"
+  publish = true
+  code    = <<-JS
+function handler(event) {
+  var request = event.request;
+  if (request.uri.indexOf('/api/') === 0) {
+    request.uri = request.uri.substring(4);
+  }
+  return request;
+}
+JS
+}
+
+module "cloudfront_api_rewrite" {
+  source = "./aws_cloudfront"
+
+  distribution_name = "frontend-api-cdn"
+
+  origins = {
+    static = {
+      domain_name       = "frontend-assets.s3.us-east-1.amazonaws.com"
+      origin_id         = "static-origin"
+      is_private_origin = false
+      origin_type       = "s3"
+    }
+
+    api = {
+      domain_name       = "abc123.execute-api.us-east-1.amazonaws.com"
+      origin_id         = "api-origin"
+      is_private_origin = false
+      origin_type       = "custom"
+      origin_path       = "/prod"
+      custom_origin_config = {
+        origin_protocol_policy = "https-only"
+        origin_ssl_protocols   = ["TLSv1.2"]
+      }
+    }
+  }
+
+  default_cache_behavior = {
+    target_origin_id = "static-origin"
+  }
+
+  ordered_cache_behavior = {
+    api_paths = {
+      path_pattern           = "/api/*"
+      target_origin_id       = "api-origin"
+      viewer_protocol_policy = "redirect-to-https"
+      allowed_methods        = ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]
+      cached_methods         = ["GET", "HEAD"]
+      cache_disabled         = true
+      requires_signed_url    = false
+
+      function_associations = {
+        rewrite_api_prefix = {
+          event_type   = "viewer-request"
+          function_arn = aws_cloudfront_function.strip_api_prefix.arn
+        }
+      }
+    }
+  }
+}
+```
+
+With this setup, `/api/users` on CloudFront is forwarded to `/users` on API Gateway stage `/prod`.
+
+---
+
 ## 4) Inputs Reference
 
 ### Core Inputs

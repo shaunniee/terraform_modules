@@ -228,6 +228,10 @@ variable "default_cache_behavior" {
     cached_methods         = optional(list(string), ["GET", "HEAD"])
     cache_policy_id        = optional(string)
     origin_request_policy_id = optional(string)
+    function_associations = optional(map(object({
+      event_type   = optional(string, "viewer-request")
+      function_arn = string
+    })), {})
   })
   default = null
 
@@ -268,6 +272,14 @@ variable "default_cache_behavior" {
     )
     error_message = "default_cache_behavior.cached_methods must be non-empty, only include GET/HEAD/OPTIONS, and be a subset of allowed_methods."
   }
+
+  validation {
+    condition = var.default_cache_behavior == null || alltrue([
+      for f in values(try(var.default_cache_behavior.function_associations, {})) :
+      trimspace(f.function_arn) != "" && contains(["viewer-request", "viewer-response"], try(f.event_type, "viewer-request"))
+    ])
+    error_message = "default_cache_behavior.function_associations must use non-empty function_arn and event_type of viewer-request or viewer-response."
+  }
 }
 
 variable "default_cache_behaviour" {
@@ -279,6 +291,10 @@ variable "default_cache_behaviour" {
     cached_methods         = optional(list(string), ["GET", "HEAD"])
     cache_policy_id        = optional(string)
     origin_request_policy_id = optional(string)
+    function_associations = optional(map(object({
+      event_type   = optional(string, "viewer-request")
+      function_arn = string
+    })), {})
   })
   default = null
 
@@ -319,6 +335,14 @@ variable "default_cache_behaviour" {
     )
     error_message = "default_cache_behaviour.cached_methods must be non-empty, only include GET/HEAD/OPTIONS, and be a subset of allowed_methods."
   }
+
+  validation {
+    condition = var.default_cache_behaviour == null || alltrue([
+      for f in values(try(var.default_cache_behaviour.function_associations, {})) :
+      trimspace(f.function_arn) != "" && contains(["viewer-request", "viewer-response"], try(f.event_type, "viewer-request"))
+    ])
+    error_message = "default_cache_behaviour.function_associations must use non-empty function_arn and event_type of viewer-request or viewer-response."
+  }
 }
 
 variable "ordered_cache_behavior" {
@@ -342,6 +366,10 @@ EOT
     viewer_protocol_policy = optional(string, "redirect-to-https")
     cache_policy_id        = optional(string)
     origin_request_policy_id = optional(string)
+    function_associations = optional(map(object({
+      event_type   = optional(string, "viewer-request")
+      function_arn = string
+    })), {})
     cache_disabled      = bool
     requires_signed_url = bool
   }))
@@ -402,6 +430,16 @@ EOT
   }
 
   validation {
+    condition = var.ordered_cache_behavior == null || alltrue(flatten([
+      for b in values(var.ordered_cache_behavior) : [
+        for f in values(try(b.function_associations, {})) :
+        trimspace(f.function_arn) != "" && contains(["viewer-request", "viewer-response"], try(f.event_type, "viewer-request"))
+      ]
+    ]))
+    error_message = "ordered_cache_behavior.function_associations must use non-empty function_arn and event_type of viewer-request or viewer-response."
+  }
+
+  validation {
     condition = var.ordered_cache_behavior == null || length(distinct([
       for b in values(var.ordered_cache_behavior) :
       b.path_pattern
@@ -420,6 +458,10 @@ variable "ordered_cache_behaviour" {
     viewer_protocol_policy = optional(string, "redirect-to-https")
     cache_policy_id        = optional(string)
     origin_request_policy_id = optional(string)
+    function_associations = optional(map(object({
+      event_type   = optional(string, "viewer-request")
+      function_arn = string
+    })), {})
     cache_disabled      = bool
     requires_signed_url = bool
   }))
@@ -477,6 +519,16 @@ variable "ordered_cache_behaviour" {
       contains(["allow-all", "https-only", "redirect-to-https"], try(b.viewer_protocol_policy, "redirect-to-https"))
     ])
     error_message = "ordered_cache_behaviour.viewer_protocol_policy must be allow-all, https-only, or redirect-to-https."
+  }
+
+  validation {
+    condition = var.ordered_cache_behaviour == null || alltrue(flatten([
+      for b in values(var.ordered_cache_behaviour) : [
+        for f in values(try(b.function_associations, {})) :
+        trimspace(f.function_arn) != "" && contains(["viewer-request", "viewer-response"], try(f.event_type, "viewer-request"))
+      ]
+    ]))
+    error_message = "ordered_cache_behaviour.function_associations must use non-empty function_arn and event_type of viewer-request or viewer-response."
   }
 
   validation {
