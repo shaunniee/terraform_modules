@@ -3,6 +3,7 @@ locals {
 
   redeployment_hash = sha1(jsonencode({
     resources             = var.resources
+    authorizers           = var.authorizers
     methods               = var.methods
     integrations          = var.integrations
     method_responses      = var.method_responses
@@ -33,12 +34,24 @@ module "resources" {
   resources        = var.resources
 }
 
+module "authorizers" {
+  source = "./submodules/authorizers"
+
+  rest_api_id  = module.api.id
+  authorizers  = var.authorizers
+}
+
 module "methods" {
   source = "./submodules/methods"
 
   rest_api_id  = module.api.id
   resource_ids = local.resource_ids_with_root
-  methods      = var.methods
+  methods = {
+    for method_key, method in var.methods :
+    method_key => merge(method, {
+      authorizer_id = contains(["CUSTOM", "COGNITO_USER_POOLS"], upper(try(method.authorization, "NONE"))) ? coalesce(try(module.authorizers.authorizer_ids[try(method.authorizer_key, "")], null), try(method.authorizer_id, null)) : null
+    })
+  }
 }
 
 module "integrations" {

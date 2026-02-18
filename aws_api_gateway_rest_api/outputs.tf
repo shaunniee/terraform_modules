@@ -18,6 +18,11 @@ output "resource_ids" {
   value       = module.resources.resource_ids
 }
 
+output "authorizer_ids" {
+  description = "Map of created authorizer IDs keyed by authorizer key."
+  value       = module.authorizers.authorizer_ids
+}
+
 output "methods_index" {
   description = "Map of methods with resolved resource IDs and HTTP methods."
   value       = module.methods.methods_index

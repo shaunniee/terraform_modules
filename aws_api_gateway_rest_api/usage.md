@@ -147,6 +147,7 @@ module "api" {
 ## Dynamic Inputs Overview
 
 - `resources`: build arbitrary nested path trees with `parent_key`
+- `authorizers`: optionally create API Gateway authorizers from input
 - `methods`: attach any HTTP method + auth mode per resource
 - `integrations`: mix `AWS_PROXY`, `HTTP_PROXY`, `MOCK`, etc.
 - `method_responses` + `integration_responses`: optional response modeling
@@ -177,6 +178,7 @@ Each map key is your internal method identifier.
   - If omitted, method is attached to API root (`/`).
 - `http_method`: request method (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`, `ANY`).
 - `authorization`: `NONE`, `AWS_IAM`, `CUSTOM`, `COGNITO_USER_POOLS`.
+- `authorizer_key`: optional reference to an entry in `authorizers`.
 - `authorizer_id`: required only for `CUSTOM` or `COGNITO_USER_POOLS`.
 - `api_key_required`: enforce usage plan/API key.
 - `request_models`: request model mapping by content type.
@@ -338,7 +340,35 @@ Each map key is your internal integration response identifier.
     - `COGNITO_USER_POOLS`: Cognito authorizer.
 
 - `authorizer_id`:
-  - Required only when auth mode expects an authorizer (`CUSTOM`/`COGNITO_USER_POOLS`).
+  - Required only when auth mode expects an authorizer (`CUSTOM`/`COGNITO_USER_POOLS`) and `authorizer_key` is not used.
+  - Omit for `NONE` and `AWS_IAM` methods.
+
+- `authorizer_key`:
+  - Preferred way to attach a module-managed authorizer.
+  - Must reference a key from `authorizers`.
+
+### Authorizer Inputs (`authorizers`)
+
+- Purpose:
+  - Creates `aws_api_gateway_authorizer` resources in this module.
+
+- `name`:
+  - Authorizer display name.
+
+- `type`:
+  - `TOKEN`, `REQUEST`, or `COGNITO_USER_POOLS`.
+
+- `authorizer_uri`:
+  - Required for `TOKEN`/`REQUEST` authorizers.
+
+- `provider_arns`:
+  - Required for `COGNITO_USER_POOLS` authorizers.
+
+- `identity_source`:
+  - Optional source expression (defaults to `method.request.header.Authorization` for TOKEN/REQUEST).
+
+- `authorizer_result_ttl_in_seconds`:
+  - Optional cache TTL (`0` to `3600`).
 
 - `api_key_required`:
   - If `true`, callers must provide API key and method must be under usage plan setup.

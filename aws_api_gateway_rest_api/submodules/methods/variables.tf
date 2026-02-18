@@ -11,6 +11,7 @@ variable "methods" {
     resource_key         = optional(string)
     http_method          = string
     authorization        = optional(string, "NONE")
+    authorizer_key       = optional(string)
     authorizer_id        = optional(string)
     api_key_required     = optional(bool, false)
     request_models       = optional(map(string), {})

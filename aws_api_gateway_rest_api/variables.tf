@@ -84,12 +84,68 @@ variable "resources" {
   }
 }
 
+variable "authorizers" {
+  description = "API Gateway authorizers keyed by authorizer key."
+  type = map(object({
+    name                             = string
+    type                             = string
+    provider_arns                    = optional(list(string), [])
+    authorizer_uri                   = optional(string)
+    authorizer_credentials           = optional(string)
+    identity_source                  = optional(string)
+    identity_validation_expression   = optional(string)
+    authorizer_result_ttl_in_seconds = optional(number)
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for a in values(var.authorizers) :
+      trimspace(a.name) != ""
+    ])
+    error_message = "authorizers[*].name must be non-empty."
+  }
+
+  validation {
+    condition = alltrue([
+      for a in values(var.authorizers) :
+      contains(["TOKEN", "REQUEST", "COGNITO_USER_POOLS"], upper(a.type))
+    ])
+    error_message = "authorizers[*].type must be TOKEN, REQUEST, or COGNITO_USER_POOLS."
+  }
+
+  validation {
+    condition = alltrue([
+      for a in values(var.authorizers) :
+      !contains(["TOKEN", "REQUEST"], upper(a.type)) || (try(a.authorizer_uri, null) != null && trimspace(try(a.authorizer_uri, "")) != "")
+    ])
+    error_message = "authorizers[*].authorizer_uri is required when type is TOKEN or REQUEST."
+  }
+
+  validation {
+    condition = alltrue([
+      for a in values(var.authorizers) :
+      upper(a.type) != "COGNITO_USER_POOLS" || length(try(a.provider_arns, [])) > 0
+    ])
+    error_message = "authorizers[*].provider_arns must contain at least one ARN when type is COGNITO_USER_POOLS."
+  }
+
+  validation {
+    condition = alltrue([
+      for a in values(var.authorizers) :
+      try(a.authorizer_result_ttl_in_seconds, null) == null || (a.authorizer_result_ttl_in_seconds >= 0 && a.authorizer_result_ttl_in_seconds <= 3600)
+    ])
+    error_message = "authorizers[*].authorizer_result_ttl_in_seconds must be null or between 0 and 3600."
+  }
+}
+
 variable "methods" {
   description = "API methods keyed by method key. resource_key defaults to root when omitted."
   type = map(object({
     resource_key         = optional(string)
     http_method          = string
     authorization        = optional(string, "NONE")
+    authorizer_key       = optional(string)
     authorizer_id        = optional(string)
     api_key_required     = optional(bool, false)
     request_models       = optional(map(string), {})
@@ -110,7 +166,7 @@ variable "methods" {
   validation {
     condition = alltrue([
       for m in values(var.methods) :
-      contains(["NONE", "AWS_IAM", "CUSTOM", "COGNITO_USER_POOLS"], try(m.authorization, "NONE"))
+      contains(["NONE", "AWS_IAM", "CUSTOM", "COGNITO_USER_POOLS"], upper(try(m.authorization, "NONE")))
     ])
     error_message = "methods[*].authorization must be NONE, AWS_IAM, CUSTOM, or COGNITO_USER_POOLS."
   }
@@ -126,9 +182,29 @@ variable "methods" {
   validation {
     condition = alltrue([
       for m in values(var.methods) :
-      !contains(["CUSTOM", "COGNITO_USER_POOLS"], try(m.authorization, "NONE")) || (try(m.authorizer_id, null) != null && trimspace(try(m.authorizer_id, "")) != "")
+      !contains(["CUSTOM", "COGNITO_USER_POOLS"], upper(try(m.authorization, "NONE"))) || (try(m.authorizer_id, null) != null && trimspace(try(m.authorizer_id, "")) != "")
+      || (try(m.authorizer_key, null) != null && trimspace(try(m.authorizer_key, "")) != "")
     ])
-    error_message = "methods[*].authorizer_id is required when authorization is CUSTOM or COGNITO_USER_POOLS."
+    error_message = "methods[*].authorizer_id or methods[*].authorizer_key is required when authorization is CUSTOM or COGNITO_USER_POOLS."
+  }
+
+  validation {
+    condition = alltrue([
+      for m in values(var.methods) :
+      contains(["CUSTOM", "COGNITO_USER_POOLS"], upper(try(m.authorization, "NONE"))) || (
+        (try(m.authorizer_id, null) == null || trimspace(try(m.authorizer_id, "")) == "") &&
+        (try(m.authorizer_key, null) == null || trimspace(try(m.authorizer_key, "")) == "")
+      )
+    ])
+    error_message = "methods[*].authorizer_id and methods[*].authorizer_key must be omitted unless authorization is CUSTOM or COGNITO_USER_POOLS."
+  }
+
+  validation {
+    condition = alltrue([
+      for m in values(var.methods) :
+      try(m.authorizer_key, null) == null || trimspace(try(m.authorizer_key, "")) == "" || contains(keys(var.authorizers), m.authorizer_key)
+    ])
+    error_message = "methods[*].authorizer_key must reference an existing authorizers key when provided."
   }
 }
 
