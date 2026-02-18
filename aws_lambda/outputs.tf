@@ -42,3 +42,13 @@ output "lambda_alias_invoke_arns" {
   description = "Map of Lambda alias invoke ARNs keyed by alias name."
   value       = { for k, v in aws_lambda_alias.this : k => v.invoke_arn }
 }
+
+output "cloudwatch_metric_alarm_arns" {
+  description = "Map of CloudWatch metric alarm ARNs keyed by metric_alarms key."
+  value       = { for k, v in aws_cloudwatch_metric_alarm.lambda : k => v.arn }
+}
+
+output "cloudwatch_metric_alarm_names" {
+  description = "Map of CloudWatch metric alarm names keyed by metric_alarms key."
+  value       = { for k, v in aws_cloudwatch_metric_alarm.lambda : k => v.alarm_name }
+}

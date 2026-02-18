@@ -39,6 +39,13 @@ resource "aws_iam_role_policy_attachment" "basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "xray_tracing" {
+  count = local.create_role && var.tracing_mode == "Active" ? 1 : 0
+
+  role       = aws_iam_role.lambda_role[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 resource "aws_cloudwatch_log_group" "lambda" {
   count = local.create_log_group ? 1 : 0
 
@@ -79,6 +86,10 @@ resource "aws_lambda_function" "this" {
     size = var.ephemeral_storage_size
   }
 
+  tracing_config {
+    mode = var.tracing_mode
+  }
+
   tags = merge(var.tags, {
     Name = "${var.function_name}-function"
   })
@@ -92,6 +103,7 @@ resource "aws_lambda_function" "this" {
 
   depends_on = [
     aws_iam_role_policy_attachment.basic_execution,
+    aws_iam_role_policy_attachment.xray_tracing,
     aws_cloudwatch_log_group.lambda
   ]
 
@@ -106,6 +118,36 @@ resource "aws_lambda_function" "this" {
       error_message = "When using S3 source, both s3_bucket and s3_key are required."
     }
   }
+}
+
+resource "aws_cloudwatch_metric_alarm" "lambda" {
+  for_each = var.metric_alarms
+
+  alarm_name          = coalesce(try(each.value.alarm_name, null), "${var.function_name}-${each.key}")
+  alarm_description   = try(each.value.alarm_description, null)
+  comparison_operator = each.value.comparison_operator
+  evaluation_periods  = each.value.evaluation_periods
+  metric_name         = each.value.metric_name
+  namespace           = try(each.value.namespace, "AWS/Lambda")
+  period              = each.value.period
+  statistic           = try(each.value.statistic, null)
+  extended_statistic  = try(each.value.extended_statistic, null)
+  threshold           = each.value.threshold
+
+  datapoints_to_alarm       = try(each.value.datapoints_to_alarm, null)
+  treat_missing_data        = try(each.value.treat_missing_data, null)
+  alarm_actions             = try(each.value.alarm_actions, [])
+  ok_actions                = try(each.value.ok_actions, [])
+  insufficient_data_actions = try(each.value.insufficient_data_actions, [])
+
+  dimensions = merge(
+    { FunctionName = aws_lambda_function.this.function_name },
+    try(each.value.dimensions, {})
+  )
+
+  tags = merge(var.tags, try(each.value.tags, {}), {
+    Name = coalesce(try(each.value.alarm_name, null), "${var.function_name}-${each.key}")
+  })
 }
 
 resource "aws_lambda_alias" "this" {

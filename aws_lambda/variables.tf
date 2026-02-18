@@ -260,3 +260,46 @@ variable "aliases" {
     error_message = "aliases[*].routing_additional_version_weights values must be between 0 and 1 (exclusive)."
   }
 }
+
+variable "tracing_mode" {
+  description = "Lambda X-Ray tracing mode. Valid values are PassThrough or Active."
+  type        = string
+  default     = "PassThrough"
+
+  validation {
+    condition     = contains(["PassThrough", "Active"], var.tracing_mode)
+    error_message = "tracing_mode must be one of: PassThrough, Active."
+  }
+}
+
+variable "metric_alarms" {
+  description = "Map of CloudWatch metric alarms keyed by logical alarm key."
+  type = map(object({
+    alarm_name               = optional(string)
+    alarm_description        = optional(string)
+    comparison_operator      = string
+    evaluation_periods       = number
+    metric_name              = string
+    namespace                = optional(string, "AWS/Lambda")
+    period                   = number
+    statistic                = optional(string)
+    extended_statistic       = optional(string)
+    threshold                = number
+    datapoints_to_alarm      = optional(number)
+    treat_missing_data       = optional(string)
+    alarm_actions            = optional(list(string), [])
+    ok_actions               = optional(list(string), [])
+    insufficient_data_actions = optional(list(string), [])
+    dimensions               = optional(map(string), {})
+    tags                     = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.metric_alarms) :
+      ((try(alarm.statistic, null) != null) != (try(alarm.extended_statistic, null) != null))
+    ])
+    error_message = "Each metric_alarms entry must set exactly one of statistic or extended_statistic."
+  }
+}

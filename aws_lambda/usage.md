@@ -2,11 +2,13 @@
 
 Terraform module for creating a Lambda function with:
 - Optional module-managed IAM execution role (or existing role support)
+- Optional Lambda X-Ray tracing configuration
 - Deployment package from local zip file or S3
 - Dead-letter target (SQS/SNS)
 - Architectures, layers, ephemeral storage, reserved concurrency
 - Optional KMS encryption for Lambda environment variables
 - Optional managed CloudWatch log group with retention + KMS
+- Optional dynamic CloudWatch metric alarms
 - Optional Lambda aliases (including weighted routing)
 
 ## Basic Usage
@@ -108,6 +110,8 @@ module "lambda" {
   filename      = "build/payments-handler.zip"
   publish       = true
 
+  tracing_mode = "Active"
+
   aliases = {
     live = {
       description      = "Production alias"
@@ -123,6 +127,63 @@ module "lambda" {
   }
 }
 ```
+
+## Tracing + Dynamic Metric Alarms Example
+
+```hcl
+module "lambda" {
+  source = "./aws_lambda"
+
+  function_name = "orders-processor"
+  runtime       = "python3.12"
+  handler       = "app.lambda_handler"
+  filename      = "build/orders-processor.zip"
+
+  tracing_mode = "Active"
+
+  metric_alarms = {
+    errors = {
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 1
+      metric_name         = "Errors"
+      period              = 60
+      statistic           = "Sum"
+      threshold           = 1
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+    }
+
+    throttles = {
+      comparison_operator = "GreaterThanThreshold"
+      evaluation_periods  = 1
+      metric_name         = "Throttles"
+      period              = 60
+      statistic           = "Sum"
+      threshold           = 0
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+    }
+
+    duration_p95 = {
+      alarm_name          = "orders-processor-duration-p95"
+      comparison_operator = "GreaterThanThreshold"
+      evaluation_periods  = 3
+      metric_name         = "Duration"
+      period              = 60
+      extended_statistic  = "p95"
+      threshold           = 500
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+    }
+  }
+}
+```
+
+Notes:
+- The module always injects `FunctionName = <lambda function name>` into alarm dimensions.
+- `dimensions` in each alarm can override or add dimensions if needed.
+- If `tracing_mode = "Active"` and the module creates the execution role, it automatically attaches `AWSXRayDaemonWriteAccess`.
+- If you pass `execution_role_arn`, ensure that role already has X-Ray write permissions when tracing is active.
 
 ## Inputs
 
@@ -150,6 +211,8 @@ module "lambda" {
 | `log_retention_in_days` | number | `14` | No | CloudWatch retention value |
 | `log_group_kms_key_arn` | string | `null` | No | KMS key ARN for log group encryption |
 | `aliases` | map(object) | `{}` | No | Lambda aliases keyed by alias name |
+| `tracing_mode` | string | `"PassThrough"` | No | Lambda X-Ray tracing mode (`PassThrough` or `Active`) |
+| `metric_alarms` | map(object) | `{}` | No | Dynamic CloudWatch metric alarms keyed by logical name |
 | `environment_variables` | map(string) | `{}` | No | Lambda environment variables |
 | `dead_letter_target_arn` | string | `null` | No | SQS/SNS ARN for failed async invocations |
 | `tags` | map(string) | `{}` | No | Resource tags |
@@ -167,6 +230,8 @@ module "lambda" {
 | `cloudwatch_log_group_name` | Log group name when module creates it |
 | `lambda_alias_arns` | Map of alias ARNs keyed by alias name |
 | `lambda_alias_invoke_arns` | Map of alias invoke ARNs keyed by alias name |
+| `cloudwatch_metric_alarm_arns` | Map of metric alarm ARNs keyed by `metric_alarms` key |
+| `cloudwatch_metric_alarm_names` | Map of metric alarm names keyed by `metric_alarms` key |
 
 ## Package Source Rules
 
