@@ -14,6 +14,12 @@ data "aws_cloudfront_origin_request_policy" "s3_origin" {
 locals {
   default_cache_behavior_input = coalesce(var.default_cache_behavior, var.default_cache_behaviour)
   ordered_cache_behavior_input = coalesce(var.ordered_cache_behavior, var.ordered_cache_behaviour, {})
+
+  enabled_cloudwatch_metric_alarms = {
+    for alarm_key, alarm in var.cloudwatch_metric_alarms :
+    alarm_key => alarm
+    if try(alarm.enabled, true)
+  }
 }
 
 # Origin Access Control for private buckets
@@ -43,6 +49,25 @@ resource "aws_cloudfront_key_group" "signed_urls" {
   count = var.kms_key_arn != null ? 1 : 0
   name  = "${var.distribution_name}-signed-url-group"
   items = [aws_cloudfront_public_key.signed_urls[0].id]
+}
+
+resource "aws_cloudfront_realtime_log_config" "this" {
+  count = var.realtime_log_config != null ? 1 : 0
+
+  name          = coalesce(try(var.realtime_log_config.name, null), "${var.distribution_name}-realtime-logs")
+  sampling_rate = try(var.realtime_log_config.sampling_rate, 100)
+  fields        = try(var.realtime_log_config.fields, [])
+
+  dynamic "endpoint" {
+    for_each = var.realtime_log_config == null ? [] : var.realtime_log_config.endpoints
+    content {
+      stream_type = try(endpoint.value.stream_type, "Kinesis")
+      kinesis_stream_config {
+        role_arn   = endpoint.value.role_arn
+        stream_arn = endpoint.value.stream_arn
+      }
+    }
+  }
 }
 
 # CloudFront Distribution
@@ -155,6 +180,7 @@ resource "aws_cloudfront_distribution" "this" {
       try(local.default_cache_behavior_input.origin_request_policy_id, null),
       data.aws_cloudfront_origin_request_policy.s3_origin.id
     )
+    realtime_log_config_arn = var.realtime_log_config != null ? aws_cloudfront_realtime_log_config.this[0].arn : null
 
     dynamic "function_association" {
       for_each = try(local.default_cache_behavior_input.function_associations, {})
@@ -187,6 +213,7 @@ resource "aws_cloudfront_distribution" "this" {
         try(ordered_cache_behavior.value.origin_request_policy_id, null),
         data.aws_cloudfront_origin_request_policy.s3_origin.id
       )
+      realtime_log_config_arn = var.realtime_log_config != null ? aws_cloudfront_realtime_log_config.this[0].arn : null
 
       dynamic "function_association" {
         for_each = try(ordered_cache_behavior.value.function_associations, {})
@@ -234,5 +261,50 @@ resource "aws_cloudfront_distribution" "this" {
     acm_certificate_arn            = var.acm_certificate_arn
     ssl_support_method             = var.acm_certificate_arn != null ? var.ssl_support_method : null
     minimum_protocol_version       = var.acm_certificate_arn != null ? var.minimum_protocol_version : null
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "cloudfront" {
+  for_each = local.enabled_cloudwatch_metric_alarms
+
+  alarm_name          = coalesce(try(each.value.alarm_name, null), "${var.distribution_name}-${each.key}")
+  alarm_description   = try(each.value.alarm_description, null)
+  comparison_operator = each.value.comparison_operator
+  evaluation_periods  = each.value.evaluation_periods
+  metric_name         = each.value.metric_name
+  namespace           = try(each.value.namespace, "AWS/CloudFront")
+  period              = each.value.period
+  statistic           = try(each.value.statistic, null)
+  extended_statistic  = try(each.value.extended_statistic, null)
+  threshold           = each.value.threshold
+
+  datapoints_to_alarm       = try(each.value.datapoints_to_alarm, null)
+  treat_missing_data        = try(each.value.treat_missing_data, null)
+  alarm_actions             = try(each.value.alarm_actions, [])
+  ok_actions                = try(each.value.ok_actions, [])
+  insufficient_data_actions = try(each.value.insufficient_data_actions, [])
+
+  dimensions = merge(
+    {
+      DistributionId = aws_cloudfront_distribution.this.id
+      Region         = "Global"
+    },
+    try(each.value.dimensions, {})
+  )
+
+  tags = merge(var.tags, try(each.value.tags, {}), {
+    Name = coalesce(try(each.value.alarm_name, null), "${var.distribution_name}-${each.key}")
+  })
+}
+
+resource "aws_cloudfront_monitoring_subscription" "this" {
+  count = var.realtime_metrics_subscription_enabled ? 1 : 0
+
+  distribution_id = aws_cloudfront_distribution.this.id
+
+  monitoring_subscription {
+    realtime_metrics_subscription_config {
+      realtime_metrics_subscription_status = "Enabled"
+    }
   }
 }

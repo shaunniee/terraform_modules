@@ -209,3 +209,135 @@ variable "lambda_permission_statement_id_prefix" {
     error_message = "lambda_permission_statement_id_prefix must be 1-80 chars using letters, numbers, hyphens, or underscores."
   }
 }
+
+variable "cloudwatch_metric_alarms" {
+  description = "CloudWatch metric alarms to create for EventBridge. Use rule_key to auto-populate EventBusName and RuleName dimensions from module-managed rules."
+  type = map(object({
+    enabled                   = optional(bool, true)
+    alarm_name                = optional(string)
+    alarm_description         = optional(string)
+    comparison_operator       = string
+    evaluation_periods        = number
+    datapoints_to_alarm       = optional(number)
+    metric_name               = string
+    namespace                 = optional(string, "AWS/Events")
+    period                    = number
+    statistic                 = string
+    threshold                 = number
+    treat_missing_data        = optional(string)
+    unit                      = optional(string)
+    actions_enabled           = optional(bool, true)
+    alarm_actions             = optional(list(string), [])
+    ok_actions                = optional(list(string), [])
+    insufficient_data_actions = optional(list(string), [])
+    rule_key                  = optional(string)
+    event_bus_name            = optional(string)
+    dimensions                = optional(map(string), {})
+    tags                      = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for _, alarm in var.cloudwatch_metric_alarms : contains([
+        "GreaterThanOrEqualToThreshold",
+        "GreaterThanThreshold",
+        "LessThanThreshold",
+        "LessThanOrEqualToThreshold",
+        "LessThanLowerOrGreaterThanUpperThreshold",
+        "LessThanLowerThreshold",
+        "GreaterThanUpperThreshold"
+      ], alarm.comparison_operator)
+    ])
+    error_message = "cloudwatch_metric_alarms[*].comparison_operator must be a valid CloudWatch comparison operator."
+  }
+
+  validation {
+    condition = alltrue([
+      for _, alarm in var.cloudwatch_metric_alarms : try(alarm.treat_missing_data, null) == null || contains([
+        "breaching",
+        "notBreaching",
+        "ignore",
+        "missing"
+      ], alarm.treat_missing_data)
+    ])
+    error_message = "cloudwatch_metric_alarms[*].treat_missing_data must be one of breaching, notBreaching, ignore, missing."
+  }
+
+  validation {
+    condition = alltrue([
+      for _, alarm in var.cloudwatch_metric_alarms : try(alarm.rule_key, null) == null || can(regex("^[^:]+:[^:]+$", trimspace(alarm.rule_key)))
+    ])
+    error_message = "cloudwatch_metric_alarms[*].rule_key must be in '<bus_name>:<rule_name>' format when provided."
+  }
+}
+
+variable "dlq_cloudwatch_metric_alarms" {
+  description = "CloudWatch metric alarms for DLQs attached to module-managed Lambda targets. Uses AWS/SQS metrics with QueueName dimension resolved from target_key/dead_letter_arn/queue_name."
+  type = map(object({
+    enabled                   = optional(bool, true)
+    alarm_name                = optional(string)
+    alarm_description         = optional(string)
+    comparison_operator       = string
+    evaluation_periods        = number
+    datapoints_to_alarm       = optional(number)
+    metric_name               = string
+    namespace                 = optional(string, "AWS/SQS")
+    period                    = number
+    statistic                 = string
+    threshold                 = number
+    treat_missing_data        = optional(string)
+    unit                      = optional(string)
+    actions_enabled           = optional(bool, true)
+    alarm_actions             = optional(list(string), [])
+    ok_actions                = optional(list(string), [])
+    insufficient_data_actions = optional(list(string), [])
+    target_key                = optional(string)
+    dead_letter_arn           = optional(string)
+    queue_name                = optional(string)
+    dimensions                = optional(map(string), {})
+    tags                      = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for _, alarm in var.dlq_cloudwatch_metric_alarms : contains([
+        "GreaterThanOrEqualToThreshold",
+        "GreaterThanThreshold",
+        "LessThanThreshold",
+        "LessThanOrEqualToThreshold",
+        "LessThanLowerOrGreaterThanUpperThreshold",
+        "LessThanLowerThreshold",
+        "GreaterThanUpperThreshold"
+      ], alarm.comparison_operator)
+    ])
+    error_message = "dlq_cloudwatch_metric_alarms[*].comparison_operator must be a valid CloudWatch comparison operator."
+  }
+
+  validation {
+    condition = alltrue([
+      for _, alarm in var.dlq_cloudwatch_metric_alarms : try(alarm.treat_missing_data, null) == null || contains([
+        "breaching",
+        "notBreaching",
+        "ignore",
+        "missing"
+      ], alarm.treat_missing_data)
+    ])
+    error_message = "dlq_cloudwatch_metric_alarms[*].treat_missing_data must be one of breaching, notBreaching, ignore, missing."
+  }
+
+  validation {
+    condition = alltrue([
+      for _, alarm in var.dlq_cloudwatch_metric_alarms : try(alarm.target_key, null) == null || can(regex("^[^:]+:[^:]+:[^:]+$", trimspace(alarm.target_key)))
+    ])
+    error_message = "dlq_cloudwatch_metric_alarms[*].target_key must be in '<bus_name>:<rule_name>:<target_id>' format when provided."
+  }
+
+  validation {
+    condition = alltrue([
+      for _, alarm in var.dlq_cloudwatch_metric_alarms : try(alarm.dead_letter_arn, null) == null || can(regex("^arn:", alarm.dead_letter_arn))
+    ])
+    error_message = "dlq_cloudwatch_metric_alarms[*].dead_letter_arn must be a valid ARN when provided."
+  }
+}

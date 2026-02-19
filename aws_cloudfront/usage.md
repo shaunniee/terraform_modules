@@ -102,7 +102,6 @@ module "cloudfront_multi" {
   ordered_cache_behavior = {
     api_paths = {
       path_pattern           = "/api/*"
-      target_origin_id       = "api-origin"
       viewer_protocol_policy = "redirect-to-https"
       allowed_methods        = ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]
       cached_methods         = ["GET", "HEAD"]
@@ -179,9 +178,6 @@ module "cloudfront_spa" {
 }
 ```
 
----
-
-### Scenario E: Custom Domain + WAF + Logging + Tags
 
 ```hcl
 module "cloudfront_prod" {
@@ -334,6 +330,74 @@ With this setup, `/api/users` on CloudFront is forwarded to `/users` on API Gate
 
 ---
 
+### Scenario H: Observability (Logging, Metrics, Alarms)
+
+```hcl
+module "cloudfront_observability" {
+  source = "./aws_cloudfront"
+
+  distribution_name = "frontend-observability-cdn"
+
+  origins = {
+    web = {
+      domain_name       = "frontend-assets.s3.us-east-1.amazonaws.com"
+      origin_id         = "web-origin"
+      is_private_origin = true
+      origin_type       = "s3"
+    }
+  }
+
+  default_cache_behavior = {
+    target_origin_id = "web-origin"
+  }
+
+  logging = {
+    bucket          = "my-cloudfront-logs.s3.amazonaws.com"
+    include_cookies = false
+    prefix          = "frontend-observability/"
+  }
+
+  realtime_log_config = {
+    sampling_rate = 100
+    fields = [
+      "timestamp",
+      "c-ip",
+      "cs-method",
+      "cs-uri-stem",
+      "sc-status",
+      "time-to-first-byte"
+    ]
+    endpoints = [
+      {
+        role_arn   = "arn:aws:iam::123456789012:role/cloudfront-realtime-logs"
+        stream_arn = "arn:aws:kinesis:us-east-1:123456789012:stream/cloudfront-realtime-logs"
+      }
+    ]
+  }
+
+  realtime_metrics_subscription_enabled = true
+
+  cloudwatch_metric_alarms = {
+    high_5xx_rate = {
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 5
+      metric_name         = "5xxErrorRate"
+      period              = 60
+      statistic           = "Average"
+      threshold           = 1
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+    }
+  }
+}
+```
+
+Notes:
+- CloudFront does not provide X-Ray-style tracing; use logs + metrics + alarms for observability.
+- Alarm dimensions default to `DistributionId` and `Region=Global`.
+
+---
+
 ## 4) Inputs Reference
 
 ### Core Inputs
@@ -361,6 +425,14 @@ With this setup, `/api/users` on CloudFront is forwarded to `/users` on API Gate
 | Variable | Type | Default | Required | Description |
 |----------|------|---------|----------|-------------|
 | `logging` | object | `null` | No | Access logging config `{ bucket, include_cookies, prefix }` |
+
+### Observability Inputs
+
+| Variable | Type | Default | Required | Description |
+|----------|------|---------|----------|-------------|
+| `cloudwatch_metric_alarms` | map(object) | `{}` | No | CloudWatch metric alarms for distribution metrics |
+| `realtime_log_config` | object | `null` | No | Real-time logging config with Kinesis endpoints |
+| `realtime_metrics_subscription_enabled` | bool | `false` | No | Enables CloudFront real-time metrics subscription |
 
 ### Origin Inputs
 
@@ -476,6 +548,9 @@ Behavior precedence for policy IDs:
 - Allowed/cached methods are validated and cached methods must be subset of allowed.
 - If any ordered behavior sets `requires_signed_url = true`, `kms_key_arn` is required.
 - SPA fallback status codes must be in `400..599`.
+- `cloudwatch_metric_alarms` entries must set exactly one of `statistic` or `extended_statistic`.
+- `realtime_log_config.sampling_rate` must be between 1 and 100.
+- `realtime_log_config.endpoints` must be non-empty and use valid IAM role/Kinesis stream ARNs.
 
 ---
 
@@ -487,6 +562,11 @@ Behavior precedence for policy IDs:
 | `cloudfront_distribution_id` | Distribution ID |
 | `cloudfront_distribution_arn` | Distribution ARN |
 | `cloudfront_key_group_id` | Signed URL key group ID, or `null` when not configured |
+| `cloudwatch_metric_alarm_arns` | Map of alarm ARNs keyed by `cloudwatch_metric_alarms` key |
+| `cloudwatch_metric_alarm_names` | Map of alarm names keyed by `cloudwatch_metric_alarms` key |
+| `realtime_log_config_arn` | Real-time log config ARN, or `null` when not configured |
+| `realtime_log_config_name` | Real-time log config name, or `null` when not configured |
+| `realtime_metrics_subscription_enabled` | Whether real-time metrics subscription is enabled |
 
 ---
 
@@ -506,6 +586,7 @@ Behavior precedence for policy IDs:
 - Use explicit policy IDs when you need strict cache/request behavior control.
 - Keep aliases and ACM cert lifecycle tightly controlled in production.
 - Enable logging for production distributions.
+- Enable alarms on 4xx/5xx rate and origin latency for production alerting.
 
 ---
 

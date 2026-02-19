@@ -9,6 +9,8 @@ Terraform module for creating a Lambda function with:
 - Optional KMS encryption for Lambda environment variables
 - Optional managed CloudWatch log group with retention + KMS
 - Optional dynamic CloudWatch metric alarms
+- Optional DLQ-specific CloudWatch metric alarms
+- Optional DLQ log metric filters
 - Optional Lambda aliases (including weighted routing)
 
 ## Basic Usage
@@ -179,6 +181,60 @@ module "lambda" {
 }
 ```
 
+## DLQ Observability Example (Metrics, Alarms, Logs)
+
+```hcl
+module "lambda" {
+  source = "./aws_lambda"
+
+  function_name = "orders-processor"
+  runtime       = "python3.12"
+  handler       = "app.lambda_handler"
+  filename      = "build/orders-processor.zip"
+
+  dead_letter_target_arn = "arn:aws:sqs:us-east-1:123456789012:orders-dlq"
+
+  dlq_cloudwatch_metric_alarms = {
+    dlq_visible_messages = {
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 1
+      metric_name         = "ApproximateNumberOfMessagesVisible"
+      period              = 60
+      statistic           = "Maximum"
+      threshold           = 1
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+    }
+
+    dlq_oldest_message_age = {
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 3
+      metric_name         = "ApproximateAgeOfOldestMessage"
+      period              = 60
+      statistic           = "Maximum"
+      threshold           = 300
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+    }
+  }
+
+  dlq_log_metric_filters = {
+    async_dlq_delivery_failures = {
+      pattern          = "\"DeadLetterErrors\""
+      metric_namespace = "Custom/LambdaDLQ"
+      metric_name      = "DeadLetterErrorsFromLogs"
+    }
+  }
+}
+```
+
+Notes:
+- `dlq_cloudwatch_metric_alarms` requires `dead_letter_target_arn` and auto-infers dimensions:
+  - SQS DLQ: `QueueName=<queue name>` with default namespace `AWS/SQS`
+  - SNS DLQ: `TopicName=<topic name>` with default namespace `AWS/SNS`
+- `dlq_log_metric_filters` creates CloudWatch log metric filters on `/aws/lambda/<function_name>`.
+- Lambda DLQ payloads are stored in SQS/SNS; payload-level logging still requires a DLQ consumer (Lambda/worker) that reads and logs messages.
+
 Notes:
 - The module always injects `FunctionName = <lambda function name>` into alarm dimensions.
 - `dimensions` in each alarm can override or add dimensions if needed.
@@ -213,6 +269,8 @@ Notes:
 | `aliases` | map(object) | `{}` | No | Lambda aliases keyed by alias name |
 | `tracing_mode` | string | `"PassThrough"` | No | Lambda X-Ray tracing mode (`PassThrough` or `Active`) |
 | `metric_alarms` | map(object) | `{}` | No | Dynamic CloudWatch metric alarms keyed by logical name |
+| `dlq_cloudwatch_metric_alarms` | map(object) | `{}` | No | DLQ-specific CloudWatch metric alarms (requires `dead_letter_target_arn`) |
+| `dlq_log_metric_filters` | map(object) | `{}` | No | DLQ-related CloudWatch log metric filters on Lambda log group |
 | `environment_variables` | map(string) | `{}` | No | Lambda environment variables |
 | `dead_letter_target_arn` | string | `null` | No | SQS/SNS ARN for failed async invocations |
 | `tags` | map(string) | `{}` | No | Resource tags |
@@ -232,6 +290,9 @@ Notes:
 | `lambda_alias_invoke_arns` | Map of alias invoke ARNs keyed by alias name |
 | `cloudwatch_metric_alarm_arns` | Map of metric alarm ARNs keyed by `metric_alarms` key |
 | `cloudwatch_metric_alarm_names` | Map of metric alarm names keyed by `metric_alarms` key |
+| `dlq_cloudwatch_metric_alarm_arns` | Map of DLQ metric alarm ARNs keyed by `dlq_cloudwatch_metric_alarms` key |
+| `dlq_cloudwatch_metric_alarm_names` | Map of DLQ metric alarm names keyed by `dlq_cloudwatch_metric_alarms` key |
+| `dlq_log_metric_filter_names` | Map of DLQ log metric filter names keyed by `dlq_log_metric_filters` key |
 
 ## Package Source Rules
 

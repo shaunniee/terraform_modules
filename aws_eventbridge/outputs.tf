@@ -25,3 +25,31 @@ output "lambda_permission_statement_ids" {
     for key, permission in aws_lambda_permission.eventbridge_invoke : key => permission.statement_id
   }
 }
+
+output "cloudwatch_metric_alarm_arns" {
+  description = "Map of CloudWatch metric alarm ARNs keyed by alarm key."
+  value = {
+    for key, alarm in aws_cloudwatch_metric_alarm.this : key => alarm.arn
+  }
+}
+
+output "cloudwatch_metric_alarm_names" {
+  description = "Map of CloudWatch metric alarm names keyed by alarm key."
+  value = {
+    for key, alarm in aws_cloudwatch_metric_alarm.this : key => alarm.alarm_name
+  }
+}
+
+output "dlq_cloudwatch_metric_alarm_arns" {
+  description = "Map of DLQ CloudWatch metric alarm ARNs keyed by alarm key."
+  value = {
+    for key, alarm in aws_cloudwatch_metric_alarm.dlq : key => alarm.arn
+  }
+}
+
+output "dlq_cloudwatch_metric_alarm_names" {
+  description = "Map of DLQ CloudWatch metric alarm names keyed by alarm key."
+  value = {
+    for key, alarm in aws_cloudwatch_metric_alarm.dlq : key => alarm.alarm_name
+  }
+}

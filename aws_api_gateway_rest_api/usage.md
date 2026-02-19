@@ -130,6 +130,29 @@ module "api" {
   create_access_log_group  = true
   access_log_retention_in_days = 30
 
+  cloudwatch_metric_alarms = {
+    high_5xx = {
+      metric_name         = "5XXError"
+      statistic           = "Sum"
+      period              = 60
+      evaluation_periods  = 5
+      threshold           = 10
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = [aws_sns_topic.ops_alerts.arn]
+    }
+    high_latency = {
+      metric_name         = "Latency"
+      statistic           = "Average"
+      period              = 60
+      evaluation_periods  = 5
+      threshold           = 1000
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = [aws_sns_topic.ops_alerts.arn]
+    }
+  }
+
   create_domain_name  = true
   domain_name         = "api.example.com"
   certificate_arn     = "arn:aws:acm:us-east-1:123456789012:certificate/11111111-2222-3333-4444-555555555555"
@@ -144,6 +167,56 @@ module "api" {
 }
 ```
 
+## Authorizer Example (Managed by Module)
+
+```hcl
+module "secure_api" {
+  source = "./aws_api_gateway_rest_api"
+
+  name = "secure-api"
+
+  resources = {
+    profile = {
+      path_part = "profile"
+    }
+  }
+
+  authorizers = {
+    jwt_auth = {
+      name           = "jwt-auth"
+      type           = "TOKEN"
+      authorizer_uri = aws_lambda_function.auth.invoke_arn
+      identity_source = "method.request.header.Authorization"
+      authorizer_result_ttl_in_seconds = 300
+    }
+  }
+
+  methods = {
+    get_profile = {
+      resource_key   = "profile"
+      http_method    = "GET"
+      authorization  = "CUSTOM"
+      authorizer_key = "jwt_auth"
+    }
+  }
+
+  integrations = {
+    get_profile_lambda = {
+      method_key              = "get_profile"
+      type                    = "AWS_PROXY"
+      integration_http_method = "POST"
+      uri                     = aws_lambda_function.profile.invoke_arn
+    }
+  }
+
+  stage_name = "v1"
+}
+```
+
+Notes:
+- Use `methods[*].authorizer_key` to reference a key from `authorizers`.
+- `methods[*].authorizer_id` is still supported as fallback when you want to attach an external pre-existing authorizer.
+
 ## Dynamic Inputs Overview
 
 - `resources`: build arbitrary nested path trees with `parent_key`
@@ -153,6 +226,7 @@ module "api" {
 - `method_responses` + `integration_responses`: optional response modeling
 - `method_settings`: global stage method tuning (`*/*`)
 - `access_log_*`: bring your own log destination or let module create one
+- `cloudwatch_metric_alarms`: define stage CloudWatch metric alarms directly in module input
 - `create_domain_name`: optional custom domain + base path mapping + DNS
 
 ## Entry-By-Entry Explanation
@@ -243,6 +317,67 @@ Each map key is your internal integration response identifier.
 - `access_log_kms_key_arn`: optional KMS key for created log group encryption.
 - `access_log_destination_arn`: use existing log destination ARN instead of creating one.
 - `access_log_format`: JSON/string format for access log events.
+
+### CloudWatch alarm entries
+
+- `cloudwatch_metric_alarms`: map of CloudWatch metric alarms to create for this stage.
+  - Default dimensions include `ApiName` and `Stage`.
+  - Use `dimensions` per alarm to extend or override dimensions when needed.
+- Common alarm fields:
+  - `metric_name`: API Gateway metric (for example `5XXError`, `4XXError`, `Latency`, `IntegrationLatency`).
+  - `statistic`, `period`, `evaluation_periods`, `threshold`, `comparison_operator`.
+  - Optional actions: `alarm_actions`, `ok_actions`, `insufficient_data_actions`.
+  - Optional controls: `enabled`, `alarm_name`, `treat_missing_data`, `namespace`, `dimensions`, `tags`.
+
+#### CloudWatch alarm examples
+
+Use these directly under `cloudwatch_metric_alarms`:
+
+```hcl
+high_4xx = {
+  metric_name         = "4XXError"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 5
+  threshold           = 25
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.ops_alerts.arn]
+}
+
+high_5xx = {
+  metric_name         = "5XXError"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 5
+  threshold           = 10
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.ops_alerts.arn]
+}
+
+high_latency = {
+  metric_name         = "Latency"
+  statistic           = "Average"
+  period              = 60
+  evaluation_periods  = 5
+  threshold           = 1000
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.ops_alerts.arn]
+}
+
+high_integration_latency = {
+  metric_name         = "IntegrationLatency"
+  statistic           = "Average"
+  period              = 60
+  evaluation_periods  = 5
+  threshold           = 800
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.ops_alerts.arn]
+}
+```
 
 ### Custom domain entries
 
@@ -535,6 +670,14 @@ Each map key is your internal integration response identifier.
   - Final log line format.
   - Must include fields useful for debugging/auditing (`requestId`, `status`, etc.).
 
+### CloudWatch Alarm Inputs
+
+- `cloudwatch_metric_alarms`:
+  - Map of alarm definitions created as `aws_cloudwatch_metric_alarm` resources.
+  - Default dimensions are `ApiName=<api name>` and `Stage=<stage name>`.
+  - Alarm map key is used in default alarm name `<api>-<stage>-<key>` unless `alarm_name` is provided.
+  - Set `enabled = false` on an entry to keep it in config but skip creation.
+
 ### Custom Domain & DNS Inputs
 
 - `create_domain_name`:
@@ -568,6 +711,8 @@ Each map key is your internal integration response identifier.
 - `rest_api_id`
 - `rest_api_execution_arn`
 - `invoke_url`
+- `cloudwatch_metric_alarm_arns`
+- `cloudwatch_metric_alarm_names`
 - `resource_ids`
 - `methods_index`
 - `integration_ids`

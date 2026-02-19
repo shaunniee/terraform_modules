@@ -569,3 +569,93 @@ variable "kms_key_arn" {
     error_message = "kms_key_arn must be a valid AWS KMS key ARN."
   }
 }
+
+variable "cloudwatch_metric_alarms" {
+  description = "Map of CloudWatch metric alarms keyed by logical alarm key. Defaults namespace to AWS/CloudFront and injects DistributionId + Region=Global dimensions."
+  type = map(object({
+    enabled                    = optional(bool, true)
+    alarm_name                 = optional(string)
+    alarm_description          = optional(string)
+    comparison_operator        = string
+    evaluation_periods         = number
+    metric_name                = string
+    namespace                  = optional(string, "AWS/CloudFront")
+    period                     = number
+    statistic                  = optional(string)
+    extended_statistic         = optional(string)
+    threshold                  = number
+    datapoints_to_alarm        = optional(number)
+    treat_missing_data         = optional(string)
+    alarm_actions              = optional(list(string), [])
+    ok_actions                 = optional(list(string), [])
+    insufficient_data_actions  = optional(list(string), [])
+    dimensions                 = optional(map(string), {})
+    tags                       = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_alarms) :
+      ((try(alarm.statistic, null) != null) != (try(alarm.extended_statistic, null) != null))
+    ])
+    error_message = "Each cloudwatch_metric_alarms entry must set exactly one of statistic or extended_statistic."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_alarms) :
+      try(alarm.treat_missing_data, null) == null || contains(["breaching", "notBreaching", "ignore", "missing"], alarm.treat_missing_data)
+    ])
+    error_message = "cloudwatch_metric_alarms[*].treat_missing_data must be one of breaching, notBreaching, ignore, missing."
+  }
+}
+
+variable "realtime_log_config" {
+  description = "Optional CloudFront real-time log configuration. When set, attaches real-time logs to default and ordered cache behaviors."
+  type = object({
+    name          = optional(string)
+    sampling_rate = optional(number, 100)
+    fields        = optional(list(string), [
+      "timestamp",
+      "c-ip",
+      "cs-method",
+      "cs-uri-stem",
+      "sc-status",
+      "time-to-first-byte",
+      "x-edge-location"
+    ])
+    endpoints = list(object({
+      stream_type = optional(string, "Kinesis")
+      role_arn    = string
+      stream_arn  = string
+    }))
+  })
+  default = null
+
+  validation {
+    condition     = var.realtime_log_config == null || (try(var.realtime_log_config.sampling_rate, 100) >= 1 && try(var.realtime_log_config.sampling_rate, 100) <= 100)
+    error_message = "realtime_log_config.sampling_rate must be between 1 and 100."
+  }
+
+  validation {
+    condition = var.realtime_log_config == null || alltrue([
+      for endpoint in var.realtime_log_config.endpoints :
+      contains(["Kinesis"], try(endpoint.stream_type, "Kinesis")) &&
+      can(regex("^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/.+$", endpoint.role_arn)) &&
+      can(regex("^arn:aws[a-zA-Z-]*:kinesis:[a-z0-9-]+:[0-9]{12}:stream/.+$", endpoint.stream_arn))
+    ])
+    error_message = "realtime_log_config.endpoints must use stream_type=Kinesis and valid role_arn/stream_arn values."
+  }
+
+  validation {
+    condition     = var.realtime_log_config == null || length(var.realtime_log_config.endpoints) > 0
+    error_message = "realtime_log_config.endpoints must include at least one endpoint when realtime_log_config is set."
+  }
+}
+
+variable "realtime_metrics_subscription_enabled" {
+  description = "Enable CloudFront real-time metrics subscription for the distribution."
+  type        = bool
+  default     = false
+}

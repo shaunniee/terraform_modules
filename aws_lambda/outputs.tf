@@ -52,3 +52,18 @@ output "cloudwatch_metric_alarm_names" {
   description = "Map of CloudWatch metric alarm names keyed by metric_alarms key."
   value       = { for k, v in aws_cloudwatch_metric_alarm.lambda : k => v.alarm_name }
 }
+
+output "dlq_cloudwatch_metric_alarm_arns" {
+  description = "Map of DLQ CloudWatch metric alarm ARNs keyed by dlq_cloudwatch_metric_alarms key."
+  value       = { for k, v in aws_cloudwatch_metric_alarm.dlq : k => v.arn }
+}
+
+output "dlq_cloudwatch_metric_alarm_names" {
+  description = "Map of DLQ CloudWatch metric alarm names keyed by dlq_cloudwatch_metric_alarms key."
+  value       = { for k, v in aws_cloudwatch_metric_alarm.dlq : k => v.alarm_name }
+}
+
+output "dlq_log_metric_filter_names" {
+  description = "Map of DLQ log metric filter names keyed by dlq_log_metric_filters key."
+  value       = { for k, v in aws_cloudwatch_log_metric_filter.dlq : k => v.name }
+}

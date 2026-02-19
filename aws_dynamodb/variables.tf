@@ -266,3 +266,100 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "cloudwatch_metric_alarms" {
+  description = "Map of CloudWatch metric alarms keyed by logical alarm key. Defaults namespace to AWS/DynamoDB and injects TableName dimension."
+  type = map(object({
+    enabled                     = optional(bool, true)
+    alarm_name                  = optional(string)
+    alarm_description           = optional(string)
+    comparison_operator         = string
+    evaluation_periods          = number
+    metric_name                 = string
+    namespace                   = optional(string, "AWS/DynamoDB")
+    period                      = number
+    statistic                   = optional(string)
+    extended_statistic          = optional(string)
+    threshold                   = number
+    datapoints_to_alarm         = optional(number)
+    treat_missing_data          = optional(string)
+    alarm_actions               = optional(list(string), [])
+    ok_actions                  = optional(list(string), [])
+    insufficient_data_actions   = optional(list(string), [])
+    dimensions                  = optional(map(string), {})
+    tags                        = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_alarms) :
+      ((try(alarm.statistic, null) != null) != (try(alarm.extended_statistic, null) != null))
+    ])
+    error_message = "Each cloudwatch_metric_alarms entry must set exactly one of statistic or extended_statistic."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_alarms) :
+      try(alarm.treat_missing_data, null) == null || contains(["breaching", "notBreaching", "ignore", "missing"], alarm.treat_missing_data)
+    ])
+    error_message = "cloudwatch_metric_alarms[*].treat_missing_data must be one of breaching, notBreaching, ignore, missing."
+  }
+}
+
+variable "contributor_insights" {
+  description = "Contributor Insights configuration for DynamoDB table and optional GSIs (useful for hot-key tracing/analysis)."
+  type = object({
+    table_enabled                         = optional(bool, false)
+    all_global_secondary_indexes_enabled = optional(bool, false)
+    global_secondary_index_names         = optional(list(string), [])
+  })
+  default = {
+    table_enabled                         = false
+    all_global_secondary_indexes_enabled = false
+    global_secondary_index_names         = []
+  }
+
+  validation {
+    condition = length(distinct(try(var.contributor_insights.global_secondary_index_names, []))) == length(try(var.contributor_insights.global_secondary_index_names, []))
+    error_message = "contributor_insights.global_secondary_index_names must contain unique names."
+  }
+
+  validation {
+    condition = alltrue([
+      for name in try(var.contributor_insights.global_secondary_index_names, []) : contains([for g in var.global_secondary_indexes : g.name], name)
+    ])
+    error_message = "contributor_insights.global_secondary_index_names must reference existing global_secondary_indexes names."
+  }
+}
+
+variable "cloudtrail_data_events" {
+  description = "Optional CloudTrail data-event logging for this table (audit logging). Creates a dedicated trail writing to the provided S3 bucket."
+  type = object({
+    enabled                    = optional(bool, false)
+    trail_name                 = optional(string)
+    s3_bucket_name             = optional(string)
+    include_management_events  = optional(bool, false)
+    read_write_type            = optional(string, "All")
+    tags                       = optional(map(string), {})
+  })
+  default = {
+    enabled                   = false
+    trail_name                = null
+    s3_bucket_name            = null
+    include_management_events = false
+    read_write_type           = "All"
+    tags                      = {}
+  }
+
+  validation {
+    condition     = !try(var.cloudtrail_data_events.enabled, false) || (try(var.cloudtrail_data_events.s3_bucket_name, null) != null && trimspace(var.cloudtrail_data_events.s3_bucket_name) != "")
+    error_message = "cloudtrail_data_events.s3_bucket_name is required when cloudtrail_data_events.enabled is true."
+  }
+
+  validation {
+    condition     = contains(["All", "ReadOnly", "WriteOnly"], try(var.cloudtrail_data_events.read_write_type, "All"))
+    error_message = "cloudtrail_data_events.read_write_type must be one of All, ReadOnly, WriteOnly."
+  }
+}

@@ -63,6 +63,22 @@ output "access_log_group_name" {
   value       = module.stage.access_log_group_name
 }
 
+output "cloudwatch_metric_alarm_arns" {
+  description = "Map of CloudWatch metric alarm ARNs keyed by alarm key."
+  value = {
+    for alarm_key, alarm in aws_cloudwatch_metric_alarm.apigw :
+    alarm_key => alarm.arn
+  }
+}
+
+output "cloudwatch_metric_alarm_names" {
+  description = "Map of CloudWatch metric alarm names keyed by alarm key."
+  value = {
+    for alarm_key, alarm in aws_cloudwatch_metric_alarm.apigw :
+    alarm_key => alarm.alarm_name
+  }
+}
+
 output "custom_domain_name" {
   description = "Custom domain name when create_domain_name is true."
   value       = var.create_domain_name ? module.domain[0].domain_name : null

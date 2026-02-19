@@ -7,6 +7,18 @@ locals {
     [for g in var.global_secondary_indexes : try(g.range_key, null)],
     [for l in var.local_secondary_indexes : l.range_key]
   )))
+
+  enabled_cloudwatch_metric_alarms = {
+    for alarm_key, alarm in var.cloudwatch_metric_alarms :
+    alarm_key => alarm
+    if try(alarm.enabled, true)
+  }
+
+  contributor_insights_enabled_gsi_names = (
+    try(var.contributor_insights.all_global_secondary_indexes_enabled, false)
+    ? [for g in var.global_secondary_indexes : g.name]
+    : try(var.contributor_insights.global_secondary_index_names, [])
+  )
 }
 
 resource "aws_dynamodb_table" "this" {
@@ -161,4 +173,69 @@ resource "aws_dynamodb_table" "this" {
       error_message = "ttl.attribute_name is required when ttl.enabled = true."
     }
   }
+}
+
+resource "aws_cloudwatch_metric_alarm" "dynamodb" {
+  for_each = local.enabled_cloudwatch_metric_alarms
+
+  alarm_name          = coalesce(try(each.value.alarm_name, null), "${var.table_name}-${each.key}")
+  alarm_description   = try(each.value.alarm_description, null)
+  comparison_operator = each.value.comparison_operator
+  evaluation_periods  = each.value.evaluation_periods
+  metric_name         = each.value.metric_name
+  namespace           = try(each.value.namespace, "AWS/DynamoDB")
+  period              = each.value.period
+  statistic           = try(each.value.statistic, null)
+  extended_statistic  = try(each.value.extended_statistic, null)
+  threshold           = each.value.threshold
+
+  datapoints_to_alarm       = try(each.value.datapoints_to_alarm, null)
+  treat_missing_data        = try(each.value.treat_missing_data, null)
+  alarm_actions             = try(each.value.alarm_actions, [])
+  ok_actions                = try(each.value.ok_actions, [])
+  insufficient_data_actions = try(each.value.insufficient_data_actions, [])
+
+  dimensions = merge(
+    { TableName = aws_dynamodb_table.this.name },
+    try(each.value.dimensions, {})
+  )
+
+  tags = merge(var.tags, try(each.value.tags, {}), {
+    Name = coalesce(try(each.value.alarm_name, null), "${var.table_name}-${each.key}")
+  })
+}
+
+resource "aws_dynamodb_contributor_insights" "table" {
+  count = try(var.contributor_insights.table_enabled, false) ? 1 : 0
+
+  table_name = aws_dynamodb_table.this.name
+}
+
+resource "aws_dynamodb_contributor_insights" "gsi" {
+  for_each = toset(local.contributor_insights_enabled_gsi_names)
+
+  table_name = aws_dynamodb_table.this.name
+  index_name = each.value
+}
+
+resource "aws_cloudtrail" "dynamodb_data_events" {
+  count = try(var.cloudtrail_data_events.enabled, false) ? 1 : 0
+
+  name                          = coalesce(try(var.cloudtrail_data_events.trail_name, null), "${var.table_name}-data-events")
+  s3_bucket_name                = var.cloudtrail_data_events.s3_bucket_name
+  include_global_service_events = false
+  is_multi_region_trail         = false
+  enable_logging                = true
+
+  event_selector {
+    include_management_events = try(var.cloudtrail_data_events.include_management_events, false)
+    read_write_type           = try(var.cloudtrail_data_events.read_write_type, "All")
+
+    data_resource {
+      type   = "AWS::DynamoDB::Table"
+      values = [aws_dynamodb_table.this.arn]
+    }
+  }
+
+  tags = merge(var.tags, try(var.cloudtrail_data_events.tags, {}))
 }

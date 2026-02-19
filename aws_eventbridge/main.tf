@@ -51,6 +51,55 @@ locals {
     for key, target in local.targets : key => target
     if target.create_lambda_permission && can(regex(":lambda:", target.arn))
   }
+
+  enabled_cloudwatch_metric_alarms = {
+    for alarm_key, alarm in var.cloudwatch_metric_alarms :
+    alarm_key => alarm
+    if try(alarm.enabled, true)
+  }
+
+  cloudwatch_metric_alarm_default_dimensions = {
+    for alarm_key, alarm in local.enabled_cloudwatch_metric_alarms :
+    alarm_key => merge(
+      try(alarm.rule_key, null) != null && contains(keys(local.rules), alarm.rule_key) ? {
+        EventBusName = local.rules[alarm.rule_key].bus_name
+        RuleName     = local.rules[alarm.rule_key].name
+      } : {},
+      try(alarm.event_bus_name, null) != null ? {
+        EventBusName = alarm.event_bus_name
+      } : {}
+    )
+  }
+
+  lambda_targets_with_dlq = {
+    for key, target in local.targets : key => target
+    if can(regex(":lambda:", target.arn)) && try(target.dead_letter_arn, null) != null
+  }
+
+  enabled_dlq_cloudwatch_metric_alarms = {
+    for alarm_key, alarm in var.dlq_cloudwatch_metric_alarms :
+    alarm_key => alarm
+    if try(alarm.enabled, true)
+  }
+
+  dlq_cloudwatch_metric_alarm_resolved_queue_name = {
+    for alarm_key, alarm in local.enabled_dlq_cloudwatch_metric_alarms :
+    alarm_key => coalesce(
+      try(alarm.queue_name, null),
+      try(element(split(":", alarm.dead_letter_arn), 5), null),
+      try(element(split(":", local.lambda_targets_with_dlq[alarm.target_key].dead_letter_arn), 5), null)
+    )
+  }
+
+  dlq_cloudwatch_metric_alarm_default_dimensions = {
+    for alarm_key, alarm in local.enabled_dlq_cloudwatch_metric_alarms :
+    alarm_key => merge(
+      local.dlq_cloudwatch_metric_alarm_resolved_queue_name[alarm_key] != null ? {
+        QueueName = local.dlq_cloudwatch_metric_alarm_resolved_queue_name[alarm_key]
+      } : {},
+      try(alarm.dimensions, {})
+    )
+  }
 }
 
 resource "aws_cloudwatch_event_rule" "this" {
@@ -104,4 +153,91 @@ resource "aws_lambda_permission" "eventbridge_invoke" {
   qualifier     = each.value.lambda_qualifier
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.this[each.value.rule_key].arn
+}
+
+resource "aws_cloudwatch_metric_alarm" "this" {
+  for_each = local.enabled_cloudwatch_metric_alarms
+
+  alarm_name                = coalesce(try(each.value.alarm_name, null), "eventbridge-${each.key}")
+  alarm_description         = try(each.value.alarm_description, null)
+  comparison_operator       = each.value.comparison_operator
+  evaluation_periods        = each.value.evaluation_periods
+  datapoints_to_alarm       = try(each.value.datapoints_to_alarm, null)
+  metric_name               = each.value.metric_name
+  namespace                 = try(each.value.namespace, "AWS/Events")
+  period                    = each.value.period
+  statistic                 = each.value.statistic
+  threshold                 = each.value.threshold
+  treat_missing_data        = try(each.value.treat_missing_data, null)
+  unit                      = try(each.value.unit, null)
+  actions_enabled           = try(each.value.actions_enabled, true)
+  alarm_actions             = try(each.value.alarm_actions, [])
+  ok_actions                = try(each.value.ok_actions, [])
+  insufficient_data_actions = try(each.value.insufficient_data_actions, [])
+  dimensions = merge(
+    local.cloudwatch_metric_alarm_default_dimensions[each.key],
+    try(each.value.dimensions, {})
+  )
+  tags = merge(
+    try(
+      try(each.value.rule_key, null) != null && contains(keys(local.rules), each.value.rule_key)
+      ? try(aws_cloudwatch_event_bus.this[local.rules[each.value.rule_key].bus_name].tags, {})
+      : {},
+      {}
+    ),
+    try(each.value.tags, {})
+  )
+
+  lifecycle {
+    precondition {
+      condition     = try(each.value.rule_key, null) == null || contains(keys(local.rules), each.value.rule_key)
+      error_message = "cloudwatch_metric_alarms[\"${each.key}\"].rule_key must reference an existing module rule in '<bus_name>:<rule_name>' format."
+    }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "dlq" {
+  for_each = local.enabled_dlq_cloudwatch_metric_alarms
+
+  alarm_name                = coalesce(try(each.value.alarm_name, null), "eventbridge-dlq-${each.key}")
+  alarm_description         = try(each.value.alarm_description, null)
+  comparison_operator       = each.value.comparison_operator
+  evaluation_periods        = each.value.evaluation_periods
+  datapoints_to_alarm       = try(each.value.datapoints_to_alarm, null)
+  metric_name               = each.value.metric_name
+  namespace                 = try(each.value.namespace, "AWS/SQS")
+  period                    = each.value.period
+  statistic                 = each.value.statistic
+  threshold                 = each.value.threshold
+  treat_missing_data        = try(each.value.treat_missing_data, null)
+  unit                      = try(each.value.unit, null)
+  actions_enabled           = try(each.value.actions_enabled, true)
+  alarm_actions             = try(each.value.alarm_actions, [])
+  ok_actions                = try(each.value.ok_actions, [])
+  insufficient_data_actions = try(each.value.insufficient_data_actions, [])
+  dimensions                = local.dlq_cloudwatch_metric_alarm_default_dimensions[each.key]
+  tags = merge(
+    try(
+      try(each.value.target_key, null) != null && contains(keys(local.lambda_targets_with_dlq), each.value.target_key)
+      ? try(aws_cloudwatch_event_bus.this[local.lambda_targets_with_dlq[each.value.target_key].bus_name].tags, {})
+      : {},
+      {}
+    ),
+    try(each.value.tags, {})
+  )
+
+  lifecycle {
+    precondition {
+      condition = (
+        try(each.value.target_key, null) == null ||
+        contains(keys(local.lambda_targets_with_dlq), each.value.target_key)
+      )
+      error_message = "dlq_cloudwatch_metric_alarms[\"${each.key}\"].target_key must reference a Lambda target with dead_letter_arn in '<bus_name>:<rule_name>:<target_id>' format."
+    }
+
+    precondition {
+      condition     = local.dlq_cloudwatch_metric_alarm_resolved_queue_name[each.key] != null
+      error_message = "dlq_cloudwatch_metric_alarms[\"${each.key}\"] must set one of queue_name, dead_letter_arn, or target_key (pointing to a Lambda target with dead_letter_arn)."
+    }
+  }
 }

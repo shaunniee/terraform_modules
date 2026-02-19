@@ -411,6 +411,59 @@ variable "method_settings" {
   }
 }
 
+variable "cloudwatch_metric_alarms" {
+  description = "CloudWatch metric alarms to create for this API Gateway stage. Alarm dimensions default to ApiName and Stage and can be extended/overridden per alarm via dimensions."
+  type = map(object({
+    enabled                   = optional(bool, true)
+    alarm_name                = optional(string)
+    alarm_description         = optional(string)
+    comparison_operator       = string
+    evaluation_periods        = number
+    datapoints_to_alarm       = optional(number)
+    metric_name               = string
+    namespace                 = optional(string, "AWS/ApiGateway")
+    period                    = number
+    statistic                 = string
+    threshold                 = number
+    treat_missing_data        = optional(string)
+    unit                      = optional(string)
+    actions_enabled           = optional(bool, true)
+    alarm_actions             = optional(list(string), [])
+    ok_actions                = optional(list(string), [])
+    insufficient_data_actions = optional(list(string), [])
+    dimensions                = optional(map(string), {})
+    tags                      = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for _, alarm in var.cloudwatch_metric_alarms : contains([
+        "GreaterThanOrEqualToThreshold",
+        "GreaterThanThreshold",
+        "LessThanThreshold",
+        "LessThanOrEqualToThreshold",
+        "LessThanLowerOrGreaterThanUpperThreshold",
+        "LessThanLowerThreshold",
+        "GreaterThanUpperThreshold"
+      ], alarm.comparison_operator)
+    ])
+    error_message = "cloudwatch_metric_alarms[*].comparison_operator must be a valid CloudWatch comparison operator."
+  }
+
+  validation {
+    condition = alltrue([
+      for _, alarm in var.cloudwatch_metric_alarms : try(alarm.treat_missing_data, null) == null || contains([
+        "breaching",
+        "notBreaching",
+        "ignore",
+        "missing"
+      ], alarm.treat_missing_data)
+    ])
+    error_message = "cloudwatch_metric_alarms[*].treat_missing_data must be one of breaching, notBreaching, ignore, missing."
+  }
+}
+
 variable "access_log_enabled" {
   description = "Enable API Gateway stage access logs."
   type        = bool

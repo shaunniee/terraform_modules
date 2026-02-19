@@ -11,6 +11,12 @@ locals {
     stage_variables       = var.stage_variables
     stage_name            = var.stage_name
   }))
+
+  enabled_cloudwatch_metric_alarms = {
+    for alarm_key, alarm in var.cloudwatch_metric_alarms :
+    alarm_key => alarm
+    if try(alarm.enabled, true)
+  }
 }
 
 module "api" {
@@ -97,6 +103,32 @@ module "stage" {
   tags                         = var.tags
 
   depends_on = [module.responses]
+}
+
+resource "aws_cloudwatch_metric_alarm" "apigw" {
+  for_each = local.enabled_cloudwatch_metric_alarms
+
+  alarm_name                = coalesce(try(each.value.alarm_name, null), "${module.api.name}-${module.stage.stage_name}-${each.key}")
+  alarm_description         = try(each.value.alarm_description, null)
+  comparison_operator       = each.value.comparison_operator
+  evaluation_periods        = each.value.evaluation_periods
+  datapoints_to_alarm       = try(each.value.datapoints_to_alarm, null)
+  metric_name               = each.value.metric_name
+  namespace                 = try(each.value.namespace, "AWS/ApiGateway")
+  period                    = each.value.period
+  statistic                 = each.value.statistic
+  threshold                 = each.value.threshold
+  treat_missing_data        = try(each.value.treat_missing_data, null)
+  unit                      = try(each.value.unit, null)
+  actions_enabled           = try(each.value.actions_enabled, true)
+  alarm_actions             = try(each.value.alarm_actions, [])
+  ok_actions                = try(each.value.ok_actions, [])
+  insufficient_data_actions = try(each.value.insufficient_data_actions, [])
+  dimensions = merge({
+    ApiName = module.api.name
+    Stage   = module.stage.stage_name
+  }, try(each.value.dimensions, {}))
+  tags = merge(var.tags, try(each.value.tags, {}))
 }
 
 module "domain" {

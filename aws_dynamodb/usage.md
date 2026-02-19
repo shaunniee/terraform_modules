@@ -17,6 +17,9 @@ This module creates one `aws_dynamodb_table` resource and supports:
 - Deletion protection
 - Table class selection
 - Global Tables replicas (multi-region)
+- Dynamic CloudWatch metric alarms
+- Contributor Insights (table and GSI) for hot-key tracing/analysis
+- Optional CloudTrail data-event logging for table audit logs
 - Input validation and lifecycle preconditions for safer plans
 
 ---
@@ -211,6 +214,66 @@ module "dynamodb_events" {
 }
 ```
 
+### 5) Observability (Logging, Metrics, Alarms, Tracing)
+
+```hcl
+module "dynamodb_orders" {
+  source = "./aws_dynamodb"
+
+  table_name = "orders"
+  hash_key   = "pk"
+  range_key  = "sk"
+
+  billing_mode = "PAY_PER_REQUEST"
+
+  attributes = [
+    { name = "pk", type = "S" },
+    { name = "sk", type = "S" }
+  ]
+
+  cloudwatch_metric_alarms = {
+    throttled_requests = {
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 1
+      metric_name         = "ThrottledRequests"
+      period              = 60
+      statistic           = "Sum"
+      threshold           = 1
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+    }
+
+    user_errors = {
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 1
+      metric_name         = "UserErrors"
+      period              = 60
+      statistic           = "Sum"
+      threshold           = 5
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+    }
+  }
+
+  contributor_insights = {
+    table_enabled                         = true
+    all_global_secondary_indexes_enabled = true
+  }
+
+  cloudtrail_data_events = {
+    enabled        = true
+    trail_name     = "orders-dynamodb-audit"
+    s3_bucket_name = "my-cloudtrail-audit-logs"
+    read_write_type = "All"
+  }
+}
+```
+
+Notes:
+- Metrics/alarms: module injects `TableName=<table name>` into alarm dimensions.
+- Tracing/insights: DynamoDB does not support native X-Ray segment tracing for table operations; Contributor Insights is the closest built-in per-table/per-GSI hot-key analysis feature.
+- Logging: CloudTrail data events provide API audit logging for table reads/writes.
+
 ---
 
 ## Inputs
@@ -242,6 +305,9 @@ module "dynamodb_events" {
 | `deletion_protection_enabled` | `bool` | `false` | Enable deletion protection |
 | `table_class` | `string` | `"STANDARD"` | `STANDARD` or `STANDARD_INFREQUENT_ACCESS` |
 | `tags` | `map(string)` | `{}` | Tags to apply |
+| `cloudwatch_metric_alarms` | `map(object(...))` | `{}` | CloudWatch metric alarms for DynamoDB table metrics |
+| `contributor_insights` | `object({ table_enabled, all_global_secondary_indexes_enabled, global_secondary_index_names })` | `{ table_enabled = false, all_global_secondary_indexes_enabled = false, global_secondary_index_names = [] }` | Contributor Insights tracing/analysis settings |
+| `cloudtrail_data_events` | `object({ enabled, trail_name, s3_bucket_name, include_management_events, read_write_type, tags })` | disabled | CloudTrail data-event logging settings for table audit logs |
 
 ---
 
@@ -258,6 +324,12 @@ module "dynamodb_events" {
 | `local_secondary_index_names` | Configured LSI names |
 | `configured_replica_regions` | Replica regions from module input |
 | `replica_regions` | Replica regions reported by AWS |
+| `cloudwatch_metric_alarm_arns` | Map of alarm ARNs keyed by `cloudwatch_metric_alarms` key |
+| `cloudwatch_metric_alarm_names` | Map of alarm names keyed by `cloudwatch_metric_alarms` key |
+| `contributor_insights_table_enabled` | Whether table Contributor Insights is enabled |
+| `contributor_insights_gsi_names` | GSI names with Contributor Insights enabled |
+| `cloudtrail_data_events_trail_arn` | CloudTrail ARN when data-event logging is enabled |
+| `cloudtrail_data_events_trail_name` | CloudTrail name when data-event logging is enabled |
 
 ---
 

@@ -2,6 +2,10 @@
 
 Reusable Terraform modules for common AWS infrastructure patterns.
 
+## Guides
+
+- [IAM Companion Guide](IAM_GUIDE.md) - recommended IAM separation model, module patterns, and review checklist.
+
 ## Implemented Modules
 
 | Module | Purpose | Docs |
