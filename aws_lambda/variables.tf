@@ -25,6 +25,24 @@ variable "execution_role_arn" {
   }
 }
 
+variable "enable_logging_permissions" {
+  description = "Whether to attach AWSLambdaBasicExecutionRole (CloudWatch Logs write permissions) when module manages the execution role."
+  type        = bool
+  default     = true
+}
+
+variable "enable_monitoring_permissions" {
+  description = "Whether to attach CloudWatchLambdaInsightsExecutionRolePolicy (Lambda Insights monitoring permissions) when module manages the execution role."
+  type        = bool
+  default     = false
+}
+
+variable "enable_tracing_permissions" {
+  description = "Whether to attach AWSXRayDaemonWriteAccess when module manages the execution role."
+  type        = bool
+  default     = false
+}
+
 variable "handler" {
   description = "The handler for the Lambda function"
   type        = string

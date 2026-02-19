@@ -1,4 +1,8 @@
 locals {
+  create_role = var.execution_role_arn == null
+  role_arn    = local.create_role ? aws_iam_role.apigw_execution_role[0].arn : var.execution_role_arn
+  role_name   = local.create_role ? aws_iam_role.apigw_execution_role[0].name : null
+
   resource_ids_with_root = merge({ "__root__" = module.api.root_resource_id }, module.resources.resource_ids)
 
   redeployment_hash = sha1(jsonencode({
@@ -17,6 +21,69 @@ locals {
     alarm_key => alarm
     if try(alarm.enabled, true)
   }
+}
+
+resource "aws_iam_role" "apigw_execution_role" {
+  count = local.create_role ? 1 : 0
+
+  name = "${var.name}-apigw-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "apigateway.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = merge(var.tags, {
+    Name = "${var.name}-apigw-execution-role"
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "basic_execution" {
+  count = local.create_role && var.enable_logging_permissions ? 1 : 0
+
+  role       = aws_iam_role.apigw_execution_role[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+}
+
+resource "aws_iam_role_policy_attachment" "monitoring" {
+  count = local.create_role && var.enable_monitoring_permissions ? 1 : 0
+
+  role       = aws_iam_role.apigw_execution_role[0].name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchReadOnlyAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "xray_tracing" {
+  count = local.create_role && var.xray_tracing_enabled && var.enable_tracing_permissions ? 1 : 0
+
+  role       = aws_iam_role.apigw_execution_role[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess"
+}
+
+resource "aws_api_gateway_account" "this" {
+  count = var.manage_account_cloudwatch_role ? 1 : 0
+
+  cloudwatch_role_arn = local.role_arn
+
+  lifecycle {
+    precondition {
+      condition     = local.role_arn != null
+      error_message = "execution_role_arn must be provided or module role creation must be enabled to manage account CloudWatch role."
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.basic_execution,
+    aws_iam_role_policy_attachment.monitoring,
+    aws_iam_role_policy_attachment.xray_tracing
+  ]
 }
 
 module "api" {
@@ -102,7 +169,10 @@ module "stage" {
   method_settings              = var.method_settings
   tags                         = var.tags
 
-  depends_on = [module.responses]
+  depends_on = [
+    module.responses,
+    aws_api_gateway_account.this
+  ]
 }
 
 resource "aws_cloudwatch_metric_alarm" "apigw" {

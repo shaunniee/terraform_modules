@@ -2,6 +2,7 @@
 
 Terraform module for creating a Lambda function with:
 - Optional module-managed IAM execution role (or existing role support)
+- Optional opt-in IAM permissions for logging, monitoring, and tracing
 - Optional Lambda X-Ray tracing configuration
 - Deployment package from local zip file or S3
 - Dead-letter target (SQS/SNS)
@@ -23,6 +24,40 @@ module "lambda" {
   runtime       = "python3.12"
   handler       = "app.lambda_handler"
   filename      = "artifacts/lambda.zip"
+}
+```
+
+## Permission Toggles Example (Test vs Production)
+
+```hcl
+# Testing profile: enable observability permissions
+module "lambda_test" {
+  source = "./aws_lambda"
+
+  function_name = "orders-processor-test"
+  runtime       = "python3.12"
+  handler       = "app.lambda_handler"
+  filename      = "build/orders-processor.zip"
+
+  tracing_mode                  = "Active"
+  enable_logging_permissions    = true
+  enable_monitoring_permissions = true
+  enable_tracing_permissions    = true
+}
+
+# Production profile: tighter IAM by default
+module "lambda_prod" {
+  source = "./aws_lambda"
+
+  function_name = "orders-processor-prod"
+  runtime       = "python3.12"
+  handler       = "app.lambda_handler"
+  filename      = "build/orders-processor.zip"
+
+  tracing_mode                  = "PassThrough"
+  enable_logging_permissions    = false
+  enable_monitoring_permissions = false
+  enable_tracing_permissions    = false
 }
 ```
 
@@ -238,8 +273,10 @@ Notes:
 Notes:
 - The module always injects `FunctionName = <lambda function name>` into alarm dimensions.
 - `dimensions` in each alarm can override or add dimensions if needed.
-- If `tracing_mode = "Active"` and the module creates the execution role, it automatically attaches `AWSXRayDaemonWriteAccess`.
-- If you pass `execution_role_arn`, ensure that role already has X-Ray write permissions when tracing is active.
+- `enable_logging_permissions` controls attachment of `AWSLambdaBasicExecutionRole` when the module creates the role (enabled by default).
+- `enable_monitoring_permissions` controls attachment of `CloudWatchLambdaInsightsExecutionRolePolicy` when the module creates the role.
+- `enable_tracing_permissions` controls attachment of `AWSXRayDaemonWriteAccess` when `tracing_mode = "Active"` and the module creates the role.
+- If you pass `execution_role_arn`, ensure that external role includes any logging/monitoring/tracing permissions your function needs.
 
 ## Inputs
 
@@ -254,6 +291,9 @@ Notes:
 | `s3_key` | string | `null` | Conditional | S3 key containing deployment zip |
 | `s3_object_version` | string | `null` | No | S3 object version for deployment zip |
 | `execution_role_arn` | string | `null` | No | Existing IAM role ARN. If null, module creates role |
+| `enable_logging_permissions` | bool | `true` | No | Attach `AWSLambdaBasicExecutionRole` when module creates role |
+| `enable_monitoring_permissions` | bool | `false` | No | Attach `CloudWatchLambdaInsightsExecutionRolePolicy` when module creates role |
+| `enable_tracing_permissions` | bool | `false` | No | Attach `AWSXRayDaemonWriteAccess` when tracing is active and module creates role |
 | `description` | string | `null` | No | Lambda description |
 | `timeout` | number | `3` | No | Timeout in seconds (1-900) |
 | `memory_size` | number | `128` | No | Memory in MB (128-10240) |

@@ -8,6 +8,7 @@ Composable REST API module built with submodules for:
 - method/integration responses
 - deployment + stage
 - optional custom domain + Route53 alias
+- optional module-managed API Gateway execution role (or external role support)
 
 ## Basic Example (Lambda Proxy)
 
@@ -210,6 +211,40 @@ module "secure_api" {
   }
 
   stage_name = "v1"
+}
+```
+
+## Execution Role Example (Test vs Production)
+
+```hcl
+# Test: module creates role and attaches broader observability policies
+module "orders_api_test" {
+  source = "./aws_api_gateway_rest_api"
+
+  name = "orders-api-test"
+
+  methods      = {}
+  integrations = {}
+
+  enable_logging_permissions    = true
+  enable_monitoring_permissions = true
+  enable_tracing_permissions    = true
+  xray_tracing_enabled          = true
+}
+
+# Production: tighter policy set
+module "orders_api_prod" {
+  source = "./aws_api_gateway_rest_api"
+
+  name = "orders-api-prod"
+
+  methods      = {}
+  integrations = {}
+
+  enable_logging_permissions    = true
+  enable_monitoring_permissions = false
+  enable_tracing_permissions    = false
+  xray_tracing_enabled          = false
 }
 ```
 
@@ -633,6 +668,23 @@ high_integration_latency = {
 - `xray_tracing_enabled`:
   - Enables API Gateway X-Ray segment emission.
 
+- `execution_role_arn`:
+  - External IAM role ARN for API Gateway CloudWatch logging/tracing.
+  - If null, module creates and manages the role.
+
+- `manage_account_cloudwatch_role`:
+  - If true, module configures API Gateway account CloudWatch role association.
+  - Keep enabled for module-managed role behavior.
+
+- `enable_logging_permissions`:
+  - Attaches `AmazonAPIGatewayPushToCloudWatchLogs` when module creates role (enabled by default).
+
+- `enable_monitoring_permissions`:
+  - Attaches `CloudWatchReadOnlyAccess` when module creates role.
+
+- `enable_tracing_permissions`:
+  - Attaches `AWSXrayWriteOnlyAccess` when module creates role and X-Ray is enabled.
+
 - `cache_cluster_enabled` and `cache_cluster_size`:
   - Controls stage-level cache cluster.
   - Use only when caching strategy is planned and measured.
@@ -709,6 +761,8 @@ high_integration_latency = {
 ## Key Outputs
 
 - `rest_api_id`
+- `execution_role_name`
+- `execution_role_arn`
 - `rest_api_execution_arn`
 - `invoke_url`
 - `cloudwatch_metric_alarm_arns`

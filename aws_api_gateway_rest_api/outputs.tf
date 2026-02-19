@@ -3,6 +3,16 @@ output "rest_api_id" {
   value       = module.api.id
 }
 
+output "execution_role_name" {
+  description = "IAM role name created by module (or null when external role used)."
+  value       = local.role_name
+}
+
+output "execution_role_arn" {
+  description = "IAM role ARN used for API Gateway account CloudWatch role association."
+  value       = local.role_arn
+}
+
 output "rest_api_execution_arn" {
   description = "Execution ARN for IAM permissions."
   value       = module.api.execution_arn

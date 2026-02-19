@@ -48,14 +48,21 @@ resource "aws_iam_role" "lambda_role" {
 }
 
 resource "aws_iam_role_policy_attachment" "basic_execution" {
-  count = local.create_role ? 1 : 0
+  count = local.create_role && var.enable_logging_permissions ? 1 : 0
 
   role       = aws_iam_role.lambda_role[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "monitoring" {
+  count = local.create_role && var.enable_monitoring_permissions ? 1 : 0
+
+  role       = aws_iam_role.lambda_role[0].name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchLambdaInsightsExecutionRolePolicy"
+}
+
 resource "aws_iam_role_policy_attachment" "xray_tracing" {
-  count = local.create_role && var.tracing_mode == "Active" ? 1 : 0
+  count = local.create_role && var.tracing_mode == "Active" && var.enable_tracing_permissions ? 1 : 0
 
   role       = aws_iam_role.lambda_role[0].name
   policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
@@ -118,6 +125,7 @@ resource "aws_lambda_function" "this" {
 
   depends_on = [
     aws_iam_role_policy_attachment.basic_execution,
+    aws_iam_role_policy_attachment.monitoring,
     aws_iam_role_policy_attachment.xray_tracing,
     aws_cloudwatch_log_group.lambda
   ]

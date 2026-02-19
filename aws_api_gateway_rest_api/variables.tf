@@ -20,6 +20,41 @@ variable "tags" {
   default     = {}
 }
 
+variable "execution_role_arn" {
+  description = "Existing IAM role ARN for API Gateway CloudWatch logging/tracing. If null, module creates and manages a role."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.execution_role_arn == null || can(regex("^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role\\/.+$", var.execution_role_arn))
+    error_message = "execution_role_arn must be a valid IAM role ARN."
+  }
+}
+
+variable "enable_logging_permissions" {
+  description = "Whether to attach AmazonAPIGatewayPushToCloudWatchLogs when module manages the execution role."
+  type        = bool
+  default     = true
+}
+
+variable "enable_monitoring_permissions" {
+  description = "Whether to attach CloudWatchReadOnlyAccess when module manages the execution role."
+  type        = bool
+  default     = false
+}
+
+variable "enable_tracing_permissions" {
+  description = "Whether to attach AWSXrayWriteOnlyAccess when module manages the execution role."
+  type        = bool
+  default     = false
+}
+
+variable "manage_account_cloudwatch_role" {
+  description = "Whether to configure API Gateway account CloudWatch role association using selected execution role."
+  type        = bool
+  default     = true
+}
+
 variable "endpoint_configuration_types" {
   description = "Endpoint types for API Gateway REST API."
   type        = list(string)
