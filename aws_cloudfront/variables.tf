@@ -227,10 +227,16 @@ variable "default_cache_behavior" {
     allowed_methods        = optional(list(string), ["GET", "HEAD", "OPTIONS"])
     cached_methods         = optional(list(string), ["GET", "HEAD"])
     cache_policy_id        = optional(string)
-    origin_request_policy_id = optional(string)
+    origin_request_policy_id   = optional(string)
+    response_headers_policy_id = optional(string)
     function_associations = optional(map(object({
       event_type   = optional(string, "viewer-request")
       function_arn = string
+    })), {})
+    lambda_function_associations = optional(map(object({
+      event_type   = string
+      lambda_arn   = string
+      include_body = optional(bool, false)
     })), {})
   })
   default = null
@@ -290,10 +296,16 @@ variable "default_cache_behaviour" {
     allowed_methods        = optional(list(string), ["GET", "HEAD", "OPTIONS"])
     cached_methods         = optional(list(string), ["GET", "HEAD"])
     cache_policy_id        = optional(string)
-    origin_request_policy_id = optional(string)
+    origin_request_policy_id   = optional(string)
+    response_headers_policy_id = optional(string)
     function_associations = optional(map(object({
       event_type   = optional(string, "viewer-request")
       function_arn = string
+    })), {})
+    lambda_function_associations = optional(map(object({
+      event_type   = string
+      lambda_arn   = string
+      include_body = optional(bool, false)
     })), {})
   })
   default = null
@@ -363,12 +375,18 @@ EOT
     target_origin_id    = string
     allowed_methods     = list(string)
     cached_methods      = list(string)
-    viewer_protocol_policy = optional(string, "redirect-to-https")
-    cache_policy_id        = optional(string)
-    origin_request_policy_id = optional(string)
+    viewer_protocol_policy     = optional(string, "redirect-to-https")
+    cache_policy_id            = optional(string)
+    origin_request_policy_id   = optional(string)
+    response_headers_policy_id = optional(string)
     function_associations = optional(map(object({
       event_type   = optional(string, "viewer-request")
       function_arn = string
+    })), {})
+    lambda_function_associations = optional(map(object({
+      event_type   = string
+      lambda_arn   = string
+      include_body = optional(bool, false)
     })), {})
     cache_disabled      = bool
     requires_signed_url = bool
@@ -455,12 +473,18 @@ variable "ordered_cache_behaviour" {
     target_origin_id    = string
     allowed_methods     = list(string)
     cached_methods      = list(string)
-    viewer_protocol_policy = optional(string, "redirect-to-https")
-    cache_policy_id        = optional(string)
-    origin_request_policy_id = optional(string)
+    viewer_protocol_policy     = optional(string, "redirect-to-https")
+    cache_policy_id            = optional(string)
+    origin_request_policy_id   = optional(string)
+    response_headers_policy_id = optional(string)
     function_associations = optional(map(object({
       event_type   = optional(string, "viewer-request")
       function_arn = string
+    })), {})
+    lambda_function_associations = optional(map(object({
+      event_type   = string
+      lambda_arn   = string
+      include_body = optional(bool, false)
     })), {})
     cache_disabled      = bool
     requires_signed_url = bool
@@ -540,6 +564,87 @@ variable "ordered_cache_behaviour" {
   }
 }
 
+variable "geo_restriction" {
+  description = "Geo-restriction configuration. `restriction_type` is `none`, `whitelist`, or `blacklist`; `locations` are ISO 3166-1-alpha-2 country codes."
+  type = object({
+    restriction_type = optional(string, "none")
+    locations        = optional(list(string), [])
+  })
+  default = {}
+
+  validation {
+    condition     = contains(["none", "whitelist", "blacklist"], try(var.geo_restriction.restriction_type, "none"))
+    error_message = "geo_restriction.restriction_type must be none, whitelist, or blacklist."
+  }
+
+  validation {
+    condition = try(var.geo_restriction.restriction_type, "none") == "none" || length(try(var.geo_restriction.locations, [])) > 0
+    error_message = "geo_restriction.locations must be non-empty when restriction_type is whitelist or blacklist."
+  }
+
+  validation {
+    condition = alltrue([
+      for loc in try(var.geo_restriction.locations, []) : can(regex("^[A-Z]{2}$", loc))
+    ])
+    error_message = "geo_restriction.locations must be ISO 3166-1-alpha-2 country codes (e.g., US, GB, DE)."
+  }
+}
+
+variable "origin_groups" {
+  description = "Map of origin groups for failover. Each group has a primary and failover origin_id, and a set of HTTP status codes that trigger failover."
+  type = map(object({
+    primary_origin_id  = string
+    failover_origin_id = string
+    failover_status_codes = optional(list(number), [500, 502, 503, 504])
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for g in values(var.origin_groups) :
+      g.primary_origin_id != g.failover_origin_id
+    ])
+    error_message = "origin_groups: primary_origin_id and failover_origin_id must be different."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for g in values(var.origin_groups) : [
+        for code in g.failover_status_codes :
+        contains([400, 403, 404, 416, 500, 502, 503, 504], code)
+      ]
+    ]))
+    error_message = "origin_groups.failover_status_codes must be valid CloudFront failover codes: 400, 403, 404, 416, 500, 502, 503, 504."
+  }
+}
+
+variable "custom_error_responses" {
+  description = "Map of custom error responses. Allows custom error pages and TTLs beyond SPA fallback."
+  type = map(object({
+    error_code            = number
+    response_code         = optional(number)
+    response_page_path    = optional(string)
+    error_caching_min_ttl = optional(number)
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for e in values(var.custom_error_responses) :
+      e.error_code >= 400 && e.error_code <= 599
+    ])
+    error_message = "custom_error_responses[*].error_code must be 400–599."
+  }
+
+  validation {
+    condition = alltrue([
+      for e in values(var.custom_error_responses) :
+      e.response_page_path == null || startswith(e.response_page_path, "/")
+    ])
+    error_message = "custom_error_responses[*].response_page_path must start with '/' when provided."
+  }
+}
+
 variable "spa_fallback" {
   type    = bool
   default = false
@@ -609,6 +714,38 @@ variable "cloudwatch_metric_alarms" {
     ])
     error_message = "cloudwatch_metric_alarms[*].treat_missing_data must be one of breaching, notBreaching, ignore, missing."
   }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_alarms) :
+      contains([
+        "GreaterThanOrEqualToThreshold",
+        "GreaterThanThreshold",
+        "LessThanOrEqualToThreshold",
+        "LessThanThreshold",
+        "LessThanLowerOrGreaterThanUpperThreshold",
+        "LessThanLowerThreshold",
+        "GreaterThanUpperThreshold"
+      ], alarm.comparison_operator)
+    ])
+    error_message = "cloudwatch_metric_alarms[*].comparison_operator must be a valid CloudWatch comparison operator."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_alarms) :
+      alarm.evaluation_periods >= 1
+    ])
+    error_message = "cloudwatch_metric_alarms[*].evaluation_periods must be >= 1."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_alarms) :
+      alarm.period >= 10
+    ])
+    error_message = "cloudwatch_metric_alarms[*].period must be >= 10."
+  }
 }
 
 variable "realtime_log_config" {
@@ -658,4 +795,120 @@ variable "realtime_metrics_subscription_enabled" {
   description = "Enable CloudFront real-time metrics subscription for the distribution."
   type        = bool
   default     = false
+}
+
+# =============================================================================
+# Observability
+# =============================================================================
+
+variable "observability" {
+  description = <<-EOT
+    Observability configuration for CloudWatch alarms and dashboard.
+    Set `enabled = true` to activate default alarms and dashboard.
+  EOT
+  type = object({
+    enabled               = optional(bool, false)
+    enable_default_alarms = optional(bool, true)
+    enable_dashboard      = optional(bool, true)
+    enable_anomaly_detection_alarms = optional(bool, false)
+
+    # Default alarm thresholds
+    error_5xx_rate_threshold = optional(number, 5)   # 5xxErrorRate percentage
+    error_4xx_rate_threshold = optional(number, 15)  # 4xxErrorRate percentage
+    origin_latency_threshold = optional(number, 5)   # OriginLatency in seconds
+
+    # Alarm actions
+    default_alarm_actions             = optional(list(string), [])
+    default_ok_actions                = optional(list(string), [])
+    default_insufficient_data_actions = optional(list(string), [])
+  })
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for arn in try(var.observability.default_alarm_actions, []) : can(regex("^arn:", arn))
+    ])
+    error_message = "observability.default_alarm_actions ARNs must start with 'arn:'."
+  }
+
+  validation {
+    condition = alltrue([
+      for arn in try(var.observability.default_ok_actions, []) : can(regex("^arn:", arn))
+    ])
+    error_message = "observability.default_ok_actions ARNs must start with 'arn:'."
+  }
+
+  validation {
+    condition = alltrue([
+      for arn in try(var.observability.default_insufficient_data_actions, []) : can(regex("^arn:", arn))
+    ])
+    error_message = "observability.default_insufficient_data_actions ARNs must start with 'arn:'."
+  }
+
+  validation {
+    condition     = try(var.observability.error_5xx_rate_threshold, 5) >= 0 && try(var.observability.error_5xx_rate_threshold, 5) <= 100
+    error_message = "observability.error_5xx_rate_threshold must be 0–100."
+  }
+
+  validation {
+    condition     = try(var.observability.error_4xx_rate_threshold, 15) >= 0 && try(var.observability.error_4xx_rate_threshold, 15) <= 100
+    error_message = "observability.error_4xx_rate_threshold must be 0–100."
+  }
+
+  validation {
+    condition     = try(var.observability.origin_latency_threshold, 5) > 0
+    error_message = "observability.origin_latency_threshold must be > 0."
+  }
+}
+
+variable "cloudwatch_metric_anomaly_alarms" {
+  description = "Map of CloudWatch anomaly detection alarms keyed by logical alarm key. Each alarm uses ANOMALY_DETECTION_BAND with DistributionId + Region=Global dimensions injected by default."
+  type = map(object({
+    enabled                    = optional(bool, true)
+    alarm_name                 = optional(string)
+    alarm_description          = optional(string)
+    comparison_operator        = optional(string, "GreaterThanUpperThreshold")
+    evaluation_periods         = number
+    metric_name                = string
+    namespace                  = optional(string, "AWS/CloudFront")
+    period                     = number
+    statistic                  = string
+    anomaly_detection_stddev   = optional(number, 2)
+    datapoints_to_alarm        = optional(number)
+    treat_missing_data         = optional(string)
+    alarm_actions              = optional(list(string), [])
+    ok_actions                 = optional(list(string), [])
+    insufficient_data_actions  = optional(list(string), [])
+    dimensions                 = optional(map(string), {})
+    tags                       = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_anomaly_alarms) :
+      contains([
+        "GreaterThanUpperThreshold",
+        "LessThanLowerThreshold",
+        "LessThanLowerOrGreaterThanUpperThreshold"
+      ], try(alarm.comparison_operator, "GreaterThanUpperThreshold"))
+    ])
+    error_message = "cloudwatch_metric_anomaly_alarms[*].comparison_operator must be GreaterThanUpperThreshold, LessThanLowerThreshold, or LessThanLowerOrGreaterThanUpperThreshold."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_anomaly_alarms) :
+      try(alarm.treat_missing_data, null) == null || contains(["breaching", "notBreaching", "ignore", "missing"], alarm.treat_missing_data)
+    ])
+    error_message = "cloudwatch_metric_anomaly_alarms[*].treat_missing_data must be one of breaching, notBreaching, ignore, missing."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_anomaly_alarms) :
+      try(alarm.anomaly_detection_stddev, 2) > 0
+    ])
+    error_message = "cloudwatch_metric_anomaly_alarms[*].anomaly_detection_stddev must be greater than 0."
+  }
 }

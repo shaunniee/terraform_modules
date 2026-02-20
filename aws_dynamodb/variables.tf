@@ -245,9 +245,9 @@ variable "server_side_encryption" {
 }
 
 variable "deletion_protection_enabled" {
-  description = "Enable deletion protection for the table."
+  description = "Enable deletion protection for the table. Defaults to true for production safety."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "table_class" {
@@ -276,6 +276,7 @@ variable "observability" {
     enable_contributor_insights_table                   = optional(bool, true)
     enable_contributor_insights_all_global_secondary_indexes = optional(bool, true)
     enable_cloudtrail_data_events                       = optional(bool, false)
+    enable_dashboard                                    = optional(bool, false)
     cloudtrail_s3_bucket_name                           = optional(string)
     default_alarm_actions                               = optional(list(string), [])
     default_ok_actions                                  = optional(list(string), [])
@@ -288,6 +289,7 @@ variable "observability" {
     enable_contributor_insights_table                   = true
     enable_contributor_insights_all_global_secondary_indexes = true
     enable_cloudtrail_data_events                       = false
+    enable_dashboard                                    = false
     cloudtrail_s3_bucket_name                           = null
     default_alarm_actions                               = []
     default_ok_actions                                  = []
@@ -511,5 +513,63 @@ variable "cloudtrail_data_events" {
       )
     )
     error_message = "When cloudtrail_data_events.cloud_watch_logs_enabled=true, set exactly one mode: create_cloud_watch_logs_role=true (module-managed role) OR provide cloud_watch_logs_role_arn (external role)."
+  }
+}
+
+variable "autoscaling" {
+  description = "Auto-scaling configuration for PROVISIONED billing mode. Configures Application Auto Scaling target tracking for table and GSI read/write capacity."
+  type = object({
+    enabled                  = optional(bool, false)
+    read_min_capacity        = optional(number, 5)
+    read_max_capacity        = optional(number, 100)
+    write_min_capacity       = optional(number, 5)
+    write_max_capacity       = optional(number, 100)
+    read_target_utilization  = optional(number, 70)
+    write_target_utilization = optional(number, 70)
+    scale_in_cooldown        = optional(number, 60)
+    scale_out_cooldown       = optional(number, 60)
+    gsi_defaults = optional(object({
+      read_min_capacity        = optional(number)
+      read_max_capacity        = optional(number)
+      write_min_capacity       = optional(number)
+      write_max_capacity       = optional(number)
+      read_target_utilization  = optional(number)
+      write_target_utilization = optional(number)
+      scale_in_cooldown        = optional(number)
+      scale_out_cooldown       = optional(number)
+    }), {})
+  })
+  default = {
+    enabled = false
+  }
+
+  validation {
+    condition     = !try(var.autoscaling.enabled, false) || var.autoscaling.read_min_capacity <= var.autoscaling.read_max_capacity
+    error_message = "autoscaling.read_min_capacity must be <= read_max_capacity."
+  }
+
+  validation {
+    condition     = !try(var.autoscaling.enabled, false) || var.autoscaling.write_min_capacity <= var.autoscaling.write_max_capacity
+    error_message = "autoscaling.write_min_capacity must be <= write_max_capacity."
+  }
+
+  validation {
+    condition     = !try(var.autoscaling.enabled, false) || (var.autoscaling.read_target_utilization > 0 && var.autoscaling.read_target_utilization <= 100)
+    error_message = "autoscaling.read_target_utilization must be between 1 and 100."
+  }
+
+  validation {
+    condition     = !try(var.autoscaling.enabled, false) || (var.autoscaling.write_target_utilization > 0 && var.autoscaling.write_target_utilization <= 100)
+    error_message = "autoscaling.write_target_utilization must be between 1 and 100."
+  }
+
+  validation {
+    condition     = !try(var.autoscaling.enabled, false) || var.autoscaling.scale_in_cooldown >= 0
+    error_message = "autoscaling.scale_in_cooldown must be >= 0."
+  }
+
+  validation {
+    condition     = !try(var.autoscaling.enabled, false) || var.autoscaling.scale_out_cooldown >= 0
+    error_message = "autoscaling.scale_out_cooldown must be >= 0."
   }
 }

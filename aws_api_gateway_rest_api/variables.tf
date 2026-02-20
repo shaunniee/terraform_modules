@@ -31,6 +31,31 @@ variable "execution_role_arn" {
   }
 }
 
+variable "permissions_boundary_arn" {
+  description = "ARN of the permissions boundary policy to attach to the module-created IAM role."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.permissions_boundary_arn == null || can(regex("^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:policy\\/.+$", var.permissions_boundary_arn))
+    error_message = "permissions_boundary_arn must be a valid IAM policy ARN."
+  }
+}
+
+variable "additional_policy_arns" {
+  description = "List of additional IAM managed policy ARNs to attach to the module-created role."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for arn in var.additional_policy_arns :
+      can(regex("^arn:aws[a-zA-Z-]*:iam::[0-9]*:policy\\/.+$", arn))
+    ])
+    error_message = "Each additional_policy_arns entry must be a valid IAM policy ARN."
+  }
+}
+
 variable "enable_logging_permissions" {
   description = "Whether to attach AmazonAPIGatewayPushToCloudWatchLogs when module manages the execution role."
   type        = bool
@@ -116,6 +141,63 @@ variable "resources" {
       trimspace(r.path_part) != "" && (try(r.parent_key, null) == null || contains(keys(var.resources), r.parent_key))
     ])
     error_message = "Each resource must have non-empty path_part and parent_key must reference another resources key when set."
+  }
+}
+
+variable "gateway_responses" {
+  description = "API Gateway gateway responses for customizing default error responses (DEFAULT_4XX, DEFAULT_5XX, UNAUTHORIZED, etc.)."
+  type = map(object({
+    response_type       = string
+    status_code         = optional(string)
+    response_templates  = optional(map(string), {})
+    response_parameters = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for r in values(var.gateway_responses) : contains([
+        "ACCESS_DENIED",
+        "API_CONFIGURATION_ERROR",
+        "AUTHORIZER_CONFIGURATION_ERROR",
+        "AUTHORIZER_FAILURE",
+        "BAD_REQUEST_PARAMETERS",
+        "BAD_REQUEST_BODY",
+        "DEFAULT_4XX",
+        "DEFAULT_5XX",
+        "EXPIRED_TOKEN",
+        "INTEGRATION_FAILURE",
+        "INTEGRATION_TIMEOUT",
+        "INVALID_API_KEY",
+        "INVALID_SIGNATURE",
+        "MISSING_AUTHENTICATION_TOKEN",
+        "QUOTA_EXCEEDED",
+        "REQUEST_TOO_LARGE",
+        "RESOURCE_NOT_FOUND",
+        "THROTTLED",
+        "UNAUTHORIZED",
+        "UNSUPPORTED_MEDIA_TYPE",
+        "WAF_FILTERED"
+      ], r.response_type)
+    ])
+    error_message = "gateway_responses[*].response_type must be a valid API Gateway response type."
+  }
+}
+
+variable "request_validators" {
+  description = "API Gateway request validators keyed by validator key. Reference via methods[*].request_validator_key."
+  type = map(object({
+    name                        = string
+    validate_request_body       = optional(bool, false)
+    validate_request_parameters = optional(bool, false)
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for v in values(var.request_validators) : trimspace(v.name) != ""
+    ])
+    error_message = "request_validators[*].name must be non-empty."
   }
 }
 
@@ -446,6 +528,80 @@ variable "method_settings" {
   }
 }
 
+variable "observability" {
+  description = "High-level observability toggles. When enabled, creates preset alarms for 5XXError, 4XXError, Latency, and Count."
+  type = object({
+    enabled                           = optional(bool, false)
+    enable_default_alarms             = optional(bool, true)
+    enable_anomaly_detection_alarms   = optional(bool, false)
+    enable_dashboard                  = optional(bool, false)
+    default_alarm_actions             = optional(list(string), [])
+    default_ok_actions                = optional(list(string), [])
+    default_insufficient_data_actions = optional(list(string), [])
+  })
+  default = {
+    enabled                           = false
+    enable_default_alarms             = true
+    enable_anomaly_detection_alarms   = false
+    enable_dashboard                  = false
+    default_alarm_actions             = []
+    default_ok_actions                = []
+    default_insufficient_data_actions = []
+  }
+}
+
+variable "cloudwatch_metric_anomaly_alarms" {
+  description = "Map of CloudWatch anomaly detection alarms keyed by logical alarm key. Each alarm uses ANOMALY_DETECTION_BAND with ApiName + Stage dimensions injected by default."
+  type = map(object({
+    enabled                    = optional(bool, true)
+    alarm_name                 = optional(string)
+    alarm_description          = optional(string)
+    comparison_operator        = optional(string, "GreaterThanUpperThreshold")
+    evaluation_periods         = number
+    metric_name                = string
+    namespace                  = optional(string, "AWS/ApiGateway")
+    period                     = number
+    statistic                  = string
+    anomaly_detection_stddev   = optional(number, 2)
+    datapoints_to_alarm        = optional(number)
+    treat_missing_data         = optional(string)
+    alarm_actions              = optional(list(string), [])
+    ok_actions                 = optional(list(string), [])
+    insufficient_data_actions  = optional(list(string), [])
+    dimensions                 = optional(map(string), {})
+    tags                       = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_anomaly_alarms) :
+      contains([
+        "GreaterThanUpperThreshold",
+        "LessThanLowerThreshold",
+        "LessThanLowerOrGreaterThanUpperThreshold"
+      ], try(alarm.comparison_operator, "GreaterThanUpperThreshold"))
+    ])
+    error_message = "cloudwatch_metric_anomaly_alarms[*].comparison_operator must be GreaterThanUpperThreshold, LessThanLowerThreshold, or LessThanLowerOrGreaterThanUpperThreshold."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_anomaly_alarms) :
+      try(alarm.treat_missing_data, null) == null || contains(["breaching", "notBreaching", "ignore", "missing"], alarm.treat_missing_data)
+    ])
+    error_message = "cloudwatch_metric_anomaly_alarms[*].treat_missing_data must be one of breaching, notBreaching, ignore, missing."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_anomaly_alarms) :
+      try(alarm.anomaly_detection_stddev, 2) > 0
+    ])
+    error_message = "cloudwatch_metric_anomaly_alarms[*].anomaly_detection_stddev must be greater than 0."
+  }
+}
+
 variable "cloudwatch_metric_alarms" {
   description = "CloudWatch metric alarms to create for this API Gateway stage. Alarm dimensions default to ApiName and Stage and can be extended/overridden per alarm via dimensions."
   type = map(object({
@@ -458,7 +614,8 @@ variable "cloudwatch_metric_alarms" {
     metric_name               = string
     namespace                 = optional(string, "AWS/ApiGateway")
     period                    = number
-    statistic                 = string
+    statistic                 = optional(string)
+    extended_statistic        = optional(string)
     threshold                 = number
     treat_missing_data        = optional(string)
     unit                      = optional(string)
@@ -484,6 +641,14 @@ variable "cloudwatch_metric_alarms" {
       ], alarm.comparison_operator)
     ])
     error_message = "cloudwatch_metric_alarms[*].comparison_operator must be a valid CloudWatch comparison operator."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_alarms) :
+      ((try(alarm.statistic, null) != null) != (try(alarm.extended_statistic, null) != null))
+    ])
+    error_message = "Each cloudwatch_metric_alarms entry must set exactly one of statistic or extended_statistic."
   }
 
   validation {
@@ -529,10 +694,10 @@ variable "access_log_retention_in_days" {
 
   validation {
     condition = contains([
-      1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365,
+      0, 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365,
       400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653
     ], var.access_log_retention_in_days)
-    error_message = "access_log_retention_in_days must be a valid CloudWatch retention value."
+    error_message = "access_log_retention_in_days must be a valid CloudWatch retention value (0 = never expire)."
   }
 }
 
@@ -649,5 +814,16 @@ variable "record_name" {
   validation {
     condition     = var.record_name == null || trimspace(var.record_name) != ""
     error_message = "record_name must be null or a non-empty string."
+  }
+}
+
+variable "web_acl_arn" {
+  description = "WAFv2 Web ACL ARN to associate with the API Gateway stage."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.web_acl_arn == null || can(regex("^arn:aws[a-zA-Z-]*:wafv2:[a-z0-9-]+:[0-9]{12}:.+$", var.web_acl_arn))
+    error_message = "web_acl_arn must be a valid WAFv2 Web ACL ARN."
   }
 }

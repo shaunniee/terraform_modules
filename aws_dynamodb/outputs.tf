@@ -92,3 +92,42 @@ output "cloudtrail_data_events_cloudwatch_logs_role_arn" {
   description = "IAM role ARN used by CloudTrail to publish into CloudWatch Logs when enabled."
   value       = try(aws_iam_role.cloudtrail_to_cwlogs[0].arn, try(local.effective_cloudtrail_data_events.cloud_watch_logs_role_arn, null))
 }
+
+# Auto-scaling outputs
+
+output "autoscaling_enabled" {
+  description = "Whether auto-scaling is enabled for the table."
+  value       = local.autoscaling_enabled
+}
+
+output "autoscaling_table_read_target_arn" {
+  description = "ARN of the Application Auto Scaling target for table read capacity."
+  value       = try(aws_appautoscaling_target.table_read[0].resource_id, null)
+}
+
+output "autoscaling_table_write_target_arn" {
+  description = "ARN of the Application Auto Scaling target for table write capacity."
+  value       = try(aws_appautoscaling_target.table_write[0].resource_id, null)
+}
+
+output "autoscaling_gsi_read_targets" {
+  description = "Map of GSI name to Application Auto Scaling read target resource IDs."
+  value       = { for k, v in aws_appautoscaling_target.gsi_read : k => v.resource_id }
+}
+
+output "autoscaling_gsi_write_targets" {
+  description = "Map of GSI name to Application Auto Scaling write target resource IDs."
+  value       = { for k, v in aws_appautoscaling_target.gsi_write : k => v.resource_id }
+}
+
+# Dashboard outputs
+
+output "dashboard_name" {
+  description = "CloudWatch dashboard name when dashboard is enabled, else null."
+  value       = try(aws_cloudwatch_dashboard.this[0].dashboard_name, null)
+}
+
+output "dashboard_arn" {
+  description = "CloudWatch dashboard ARN when dashboard is enabled, else null."
+  value       = try(aws_cloudwatch_dashboard.this[0].dashboard_arn, null)
+}

@@ -24,6 +24,12 @@ variable "security_policy" {
   default = "TLS_1_2"
 }
 
+variable "endpoint_type" {
+  description = "Endpoint type for the custom domain. REGIONAL or EDGE."
+  type        = string
+  default     = "REGIONAL"
+}
+
 variable "create_route53_record" {
   type    = bool
   default = false

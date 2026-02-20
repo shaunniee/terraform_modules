@@ -20,6 +20,125 @@ locals {
     alarm_key => alarm
     if try(alarm.enabled, true)
   }
+
+  # Observability
+  observability_enabled  = try(var.observability.enabled, false)
+  dashboard_enabled      = local.observability_enabled && try(var.observability.enable_dashboard, true)
+  default_alarms_enabled = local.observability_enabled && try(var.observability.enable_default_alarms, true)
+  anomaly_alarms_enabled = local.observability_enabled && try(var.observability.enable_anomaly_detection_alarms, false)
+
+  default_alarms = local.default_alarms_enabled ? {
+    high_5xx_error_rate = {
+      enabled             = true
+      alarm_name          = null
+      alarm_description   = "CloudFront ${var.distribution_name} 5xx error rate >= ${try(var.observability.error_5xx_rate_threshold, 5)}%."
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 3
+      metric_name         = "5xxErrorRate"
+      namespace           = "AWS/CloudFront"
+      period              = 300
+      statistic           = "Average"
+      extended_statistic  = null
+      threshold           = try(var.observability.error_5xx_rate_threshold, 5)
+      datapoints_to_alarm = null
+      treat_missing_data  = "notBreaching"
+      alarm_actions             = try(var.observability.default_alarm_actions, [])
+      ok_actions                = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions                = {}
+      tags                      = {}
+    }
+    high_4xx_error_rate = {
+      enabled             = true
+      alarm_name          = null
+      alarm_description   = "CloudFront ${var.distribution_name} 4xx error rate >= ${try(var.observability.error_4xx_rate_threshold, 15)}%."
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 3
+      metric_name         = "4xxErrorRate"
+      namespace           = "AWS/CloudFront"
+      period              = 300
+      statistic           = "Average"
+      extended_statistic  = null
+      threshold           = try(var.observability.error_4xx_rate_threshold, 15)
+      datapoints_to_alarm = null
+      treat_missing_data  = "notBreaching"
+      alarm_actions             = try(var.observability.default_alarm_actions, [])
+      ok_actions                = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions                = {}
+      tags                      = {}
+    }
+    high_origin_latency = {
+      enabled             = true
+      alarm_name          = null
+      alarm_description   = "CloudFront ${var.distribution_name} origin latency >= ${try(var.observability.origin_latency_threshold, 5)}s."
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 3
+      metric_name         = "OriginLatency"
+      namespace           = "AWS/CloudFront"
+      period              = 300
+      statistic           = "Average"
+      extended_statistic  = null
+      threshold           = try(var.observability.origin_latency_threshold, 5) * 1000 # OriginLatency is in ms
+      datapoints_to_alarm = null
+      treat_missing_data  = "notBreaching"
+      alarm_actions             = try(var.observability.default_alarm_actions, [])
+      ok_actions                = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions                = {}
+      tags                      = {}
+    }
+  } : {}
+
+  # Merge: defaults + user custom alarms (user wins on key collision)
+  effective_alarms = merge(
+    { for k, v in local.default_alarms : k => v if try(v.enabled, true) },
+    local.enabled_cloudwatch_metric_alarms
+  )
+
+  # Anomaly detection alarms
+  default_anomaly_alarms = local.anomaly_alarms_enabled ? {
+    requests_anomaly = {
+      enabled                  = true
+      comparison_operator      = "GreaterThanUpperThreshold"
+      evaluation_periods       = 2
+      metric_name              = "Requests"
+      namespace                = "AWS/CloudFront"
+      period                   = 300
+      statistic                = "Sum"
+      anomaly_detection_stddev = 2
+      treat_missing_data       = "notBreaching"
+      alarm_actions            = try(var.observability.default_alarm_actions, [])
+      ok_actions               = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions               = {}
+      tags                     = {}
+    }
+    error_rate_anomaly = {
+      enabled                  = true
+      comparison_operator      = "GreaterThanUpperThreshold"
+      evaluation_periods       = 2
+      metric_name              = "TotalErrorRate"
+      namespace                = "AWS/CloudFront"
+      period                   = 300
+      statistic                = "Average"
+      anomaly_detection_stddev = 2
+      treat_missing_data       = "notBreaching"
+      alarm_actions            = try(var.observability.default_alarm_actions, [])
+      ok_actions               = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions               = {}
+      tags                     = {}
+    }
+  } : {}
+
+  effective_anomaly_alarms = merge(local.default_anomaly_alarms, var.cloudwatch_metric_anomaly_alarms)
+
+  enabled_anomaly_alarms = {
+    for alarm_key, alarm in local.effective_anomaly_alarms :
+    alarm_key => alarm
+    if try(alarm.enabled, true)
+  }
 }
 
 # Origin Access Control for private buckets
@@ -181,12 +300,22 @@ resource "aws_cloudfront_distribution" "this" {
       data.aws_cloudfront_origin_request_policy.s3_origin.id
     )
     realtime_log_config_arn = var.realtime_log_config != null ? aws_cloudfront_realtime_log_config.this[0].arn : null
+    response_headers_policy_id = try(local.default_cache_behavior_input.response_headers_policy_id, null)
 
     dynamic "function_association" {
       for_each = try(local.default_cache_behavior_input.function_associations, {})
       content {
         event_type   = try(function_association.value.event_type, "viewer-request")
         function_arn = function_association.value.function_arn
+      }
+    }
+
+    dynamic "lambda_function_association" {
+      for_each = try(local.default_cache_behavior_input.lambda_function_associations, {})
+      content {
+        event_type   = lambda_function_association.value.event_type
+        lambda_arn   = lambda_function_association.value.lambda_arn
+        include_body = try(lambda_function_association.value.include_body, false)
       }
     }
   }
@@ -214,12 +343,22 @@ resource "aws_cloudfront_distribution" "this" {
         data.aws_cloudfront_origin_request_policy.s3_origin.id
       )
       realtime_log_config_arn = var.realtime_log_config != null ? aws_cloudfront_realtime_log_config.this[0].arn : null
+      response_headers_policy_id = try(ordered_cache_behavior.value.response_headers_policy_id, null)
 
       dynamic "function_association" {
         for_each = try(ordered_cache_behavior.value.function_associations, {})
         content {
           event_type   = try(function_association.value.event_type, "viewer-request")
           function_arn = function_association.value.function_arn
+        }
+      }
+
+      dynamic "lambda_function_association" {
+        for_each = try(ordered_cache_behavior.value.lambda_function_associations, {})
+        content {
+          event_type   = lambda_function_association.value.event_type
+          lambda_arn   = lambda_function_association.value.lambda_arn
+          include_body = try(lambda_function_association.value.include_body, false)
         }
       }
 
@@ -241,9 +380,41 @@ resource "aws_cloudfront_distribution" "this" {
     }
   }
 
+  # Custom error responses (general — for custom error pages, TTLs, etc.)
+  dynamic "custom_error_response" {
+    for_each = var.custom_error_responses
+    content {
+      error_code            = custom_error_response.value.error_code
+      response_code         = custom_error_response.value.response_code
+      response_page_path    = custom_error_response.value.response_page_path
+      error_caching_min_ttl = custom_error_response.value.error_caching_min_ttl
+    }
+  }
+
+  # Origin groups (failover)
+  dynamic "origin_group" {
+    for_each = var.origin_groups
+    content {
+      origin_id = "${origin_group.key}-group"
+
+      failover_criteria {
+        status_codes = origin_group.value.failover_status_codes
+      }
+
+      member {
+        origin_id = origin_group.value.primary_origin_id
+      }
+
+      member {
+        origin_id = origin_group.value.failover_origin_id
+      }
+    }
+  }
+
   restrictions {
     geo_restriction {
-      restriction_type = "none"
+      restriction_type = try(var.geo_restriction.restriction_type, "none")
+      locations        = try(var.geo_restriction.restriction_type, "none") != "none" ? try(var.geo_restriction.locations, []) : []
     }
   }
 
@@ -265,7 +436,7 @@ resource "aws_cloudfront_distribution" "this" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "cloudfront" {
-  for_each = local.enabled_cloudwatch_metric_alarms
+  for_each = local.effective_alarms
 
   alarm_name          = coalesce(try(each.value.alarm_name, null), "${var.distribution_name}-${each.key}")
   alarm_description   = try(each.value.alarm_description, null)
@@ -297,7 +468,7 @@ resource "aws_cloudwatch_metric_alarm" "cloudfront" {
   })
 }
 
-resource "aws_cloudfront_monitoring_subscription" "this" {
+resource "aws_cloudwatch_monitoring_subscription" "this" {
   count = var.realtime_metrics_subscription_enabled ? 1 : 0
 
   distribution_id = aws_cloudfront_distribution.this.id
@@ -307,4 +478,209 @@ resource "aws_cloudfront_monitoring_subscription" "this" {
       realtime_metrics_subscription_status = "Enabled"
     }
   }
+}
+
+# =============================================================================
+# CloudWatch Anomaly Detection Alarms
+# =============================================================================
+
+resource "aws_cloudwatch_metric_alarm" "cloudfront_anomaly" {
+  for_each = local.enabled_anomaly_alarms
+
+  alarm_name          = coalesce(try(each.value.alarm_name, null), "${var.distribution_name}-${each.key}")
+  alarm_description   = try(each.value.alarm_description, null)
+  comparison_operator = try(each.value.comparison_operator, "GreaterThanUpperThreshold")
+  evaluation_periods  = each.value.evaluation_periods
+  threshold_metric_id = "ad1"
+
+  datapoints_to_alarm       = try(each.value.datapoints_to_alarm, null)
+  treat_missing_data        = try(each.value.treat_missing_data, null)
+  alarm_actions             = try(each.value.alarm_actions, [])
+  ok_actions                = try(each.value.ok_actions, [])
+  insufficient_data_actions = try(each.value.insufficient_data_actions, [])
+
+  metric_query {
+    id          = "m1"
+    return_data = true
+
+    metric {
+      metric_name = each.value.metric_name
+      namespace   = try(each.value.namespace, "AWS/CloudFront")
+      period      = each.value.period
+      stat        = each.value.statistic
+      dimensions = merge(
+        {
+          DistributionId = aws_cloudfront_distribution.this.id
+          Region         = "Global"
+        },
+        try(each.value.dimensions, {})
+      )
+    }
+  }
+
+  metric_query {
+    id          = "ad1"
+    expression  = "ANOMALY_DETECTION_BAND(m1, ${try(each.value.anomaly_detection_stddev, 2)})"
+    label       = "${coalesce(try(each.value.alarm_name, null), "${var.distribution_name}-${each.key}")}-band"
+    return_data = true
+  }
+
+  tags = merge(var.tags, try(each.value.tags, {}), {
+    Name = coalesce(try(each.value.alarm_name, null), "${var.distribution_name}-${each.key}")
+  })
+}
+
+# =============================================================================
+# CloudWatch Dashboard
+# =============================================================================
+
+resource "aws_cloudwatch_dashboard" "this" {
+  count = local.dashboard_enabled ? 1 : 0
+
+  dashboard_name = substr("cloudfront-${var.distribution_name}", 0, 255)
+
+  dashboard_body = jsonencode({
+    widgets = concat(
+      # Row 1: Request count & cache hit rate
+      [
+        {
+          type   = "metric"
+          x      = 0
+          y      = 0
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Requests"
+            region  = "us-east-1"
+            stat    = "Sum"
+            period  = 300
+            metrics = [
+              ["AWS/CloudFront", "Requests", "DistributionId", aws_cloudfront_distribution.this.id, "Region", "Global"]
+            ]
+          }
+        },
+        {
+          type   = "metric"
+          x      = 12
+          y      = 0
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Cache Hit Rate (%)"
+            region  = "us-east-1"
+            stat    = "Average"
+            period  = 300
+            metrics = [
+              ["AWS/CloudFront", "CacheHitRate", "DistributionId", aws_cloudfront_distribution.this.id, "Region", "Global"]
+            ]
+          }
+        }
+      ],
+      # Row 2: Error rates
+      [
+        {
+          type   = "metric"
+          x      = 0
+          y      = 6
+          width  = 12
+          height = 6
+          properties = {
+            title   = "4xx Error Rate (%)"
+            region  = "us-east-1"
+            stat    = "Average"
+            period  = 300
+            metrics = [
+              ["AWS/CloudFront", "4xxErrorRate", "DistributionId", aws_cloudfront_distribution.this.id, "Region", "Global"]
+            ]
+          }
+        },
+        {
+          type   = "metric"
+          x      = 12
+          y      = 6
+          width  = 12
+          height = 6
+          properties = {
+            title   = "5xx Error Rate (%)"
+            region  = "us-east-1"
+            stat    = "Average"
+            period  = 300
+            metrics = [
+              ["AWS/CloudFront", "5xxErrorRate", "DistributionId", aws_cloudfront_distribution.this.id, "Region", "Global"]
+            ]
+          }
+        }
+      ],
+      # Row 3: Bytes downloaded & origin latency
+      [
+        {
+          type   = "metric"
+          x      = 0
+          y      = 12
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Bytes Downloaded"
+            region  = "us-east-1"
+            stat    = "Sum"
+            period  = 300
+            metrics = [
+              ["AWS/CloudFront", "BytesDownloaded", "DistributionId", aws_cloudfront_distribution.this.id, "Region", "Global"]
+            ]
+          }
+        },
+        {
+          type   = "metric"
+          x      = 12
+          y      = 12
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Bytes Uploaded"
+            region  = "us-east-1"
+            stat    = "Sum"
+            period  = 300
+            metrics = [
+              ["AWS/CloudFront", "BytesUploaded", "DistributionId", aws_cloudfront_distribution.this.id, "Region", "Global"]
+            ]
+          }
+        }
+      ],
+      # Row 4: Origin latency & total error rate
+      [
+        {
+          type   = "metric"
+          x      = 0
+          y      = 18
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Origin Latency (ms)"
+            region  = "us-east-1"
+            stat    = "Average"
+            period  = 300
+            metrics = [
+              ["AWS/CloudFront", "OriginLatency", "DistributionId", aws_cloudfront_distribution.this.id, "Region", "Global"]
+            ]
+          }
+        },
+        {
+          type   = "metric"
+          x      = 12
+          y      = 18
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Total Error Rate (%)"
+            region  = "us-east-1"
+            stat    = "Average"
+            period  = 300
+            metrics = [
+              ["AWS/CloudFront", "TotalErrorRate", "DistributionId", aws_cloudfront_distribution.this.id, "Region", "Global"]
+            ]
+          }
+        }
+      ]
+    )
+  })
 }

@@ -25,6 +25,37 @@ variable "execution_role_arn" {
   }
 }
 
+variable "permissions_boundary_arn" {
+  description = "ARN of the permissions boundary policy to attach to the module-created IAM role."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.permissions_boundary_arn == null || can(regex("^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:policy\\/.+$", var.permissions_boundary_arn))
+    error_message = "permissions_boundary_arn must be a valid IAM policy ARN."
+  }
+}
+
+variable "additional_policy_arns" {
+  description = "List of additional IAM managed policy ARNs to attach to the module-created role."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for arn in var.additional_policy_arns :
+      can(regex("^arn:aws[a-zA-Z-]*:iam::[0-9]*:policy\\/.+$", arn))
+    ])
+    error_message = "Each additional_policy_arns entry must be a valid IAM policy ARN."
+  }
+}
+
+variable "inline_policies" {
+  description = "Map of inline IAM policy names to JSON policy documents to attach to the module-created role."
+  type        = map(string)
+  default     = {}
+}
+
 variable "enable_logging_permissions" {
   description = "Whether to attach AWSLambdaBasicExecutionRole (CloudWatch Logs write permissions) when module manages the execution role."
   type        = bool
@@ -212,6 +243,34 @@ variable "kms_key_arn" {
   }
 }
 
+variable "vpc_subnet_ids" {
+  description = "List of subnet IDs for Lambda VPC configuration. Must be provided with vpc_security_group_ids."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for subnet in var.vpc_subnet_ids :
+      can(regex("^subnet-[a-f0-9]+$", subnet))
+    ])
+    error_message = "Each vpc_subnet_ids entry must be a valid subnet ID (subnet-xxx)."
+  }
+}
+
+variable "vpc_security_group_ids" {
+  description = "List of security group IDs for Lambda VPC configuration. Must be provided with vpc_subnet_ids."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for sg in var.vpc_security_group_ids :
+      can(regex("^sg-[a-f0-9]+$", sg))
+    ])
+    error_message = "Each vpc_security_group_ids entry must be a valid security group ID (sg-xxx)."
+  }
+}
+
 variable "create_cloudwatch_log_group" {
   description = "Whether to create a dedicated CloudWatch log group for the Lambda function."
   type        = bool
@@ -225,10 +284,10 @@ variable "log_retention_in_days" {
 
   validation {
     condition = contains([
-      1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365,
+      0, 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365,
       400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653
     ], var.log_retention_in_days)
-    error_message = "log_retention_in_days must be a valid CloudWatch retention value."
+    error_message = "log_retention_in_days must be a valid CloudWatch retention value (0 = never expire)."
   }
 }
 
@@ -279,6 +338,25 @@ variable "aliases" {
   }
 }
 
+variable "allowed_triggers" {
+  description = "Map of triggers to create Lambda permission (resource-based policy) entries for. Allows services like API Gateway, S3, EventBridge, etc. to invoke this function."
+  type = map(object({
+    principal     = string
+    source_arn    = optional(string)
+    source_account = optional(string)
+    qualifier     = optional(string)
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for trigger in values(var.allowed_triggers) :
+      trimspace(trigger.principal) != ""
+    ])
+    error_message = "Each allowed_triggers entry must have a non-empty principal."
+  }
+}
+
 variable "tracing_mode" {
   description = "Lambda X-Ray tracing mode. Valid values are PassThrough or Active."
   type        = string
@@ -296,6 +374,7 @@ variable "observability" {
     enabled                         = optional(bool, false)
     enable_default_alarms           = optional(bool, true)
     enable_anomaly_detection_alarms = optional(bool, false)
+    enable_dashboard                = optional(bool, false)
     default_alarm_actions           = optional(list(string), [])
     default_ok_actions              = optional(list(string), [])
     default_insufficient_data_actions = optional(list(string), [])
@@ -304,6 +383,7 @@ variable "observability" {
     enabled                         = false
     enable_default_alarms           = true
     enable_anomaly_detection_alarms = false
+    enable_dashboard                = false
     default_alarm_actions           = []
     default_ok_actions              = []
     default_insufficient_data_actions = []
@@ -400,6 +480,26 @@ variable "metric_anomaly_alarms" {
       try(alarm.anomaly_detection_stddev, 2) > 0
     ])
     error_message = "metric_anomaly_alarms[*].anomaly_detection_stddev must be greater than 0."
+  }
+}
+
+variable "log_metric_filters" {
+  description = "Map of CloudWatch log metric filters on the Lambda log group. For general-purpose log pattern matching (e.g., ERROR, WARN, custom patterns)."
+  type = map(object({
+    enabled          = optional(bool, true)
+    pattern          = string
+    metric_namespace = string
+    metric_name      = string
+    metric_value     = optional(string, "1")
+    default_value    = optional(number)
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for filter in values(var.log_metric_filters) : trimspace(filter.pattern) != "" && trimspace(filter.metric_namespace) != "" && trimspace(filter.metric_name) != ""
+    ])
+    error_message = "Each log_metric_filters entry must have non-empty pattern, metric_namespace, and metric_name."
   }
 }
 

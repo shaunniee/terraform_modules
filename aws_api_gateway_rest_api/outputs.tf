@@ -33,6 +33,11 @@ output "authorizer_ids" {
   value       = module.authorizers.authorizer_ids
 }
 
+output "request_validator_ids" {
+  description = "Map of request validator IDs keyed by validator key."
+  value       = { for k, v in aws_api_gateway_request_validator.this : k => v.id }
+}
+
 output "methods_index" {
   description = "Map of methods with resolved resource IDs and HTTP methods."
   value       = module.methods.methods_index
@@ -53,6 +58,11 @@ output "integration_response_ids" {
   value       = module.responses.integration_response_ids
 }
 
+output "deployment_id" {
+  description = "Deployment ID."
+  value       = module.stage.deployment_id
+}
+
 output "stage_name" {
   description = "Stage name."
   value       = module.stage.stage_name
@@ -63,6 +73,11 @@ output "stage_arn" {
   value       = module.stage.stage_arn
 }
 
+output "stage_execution_arn" {
+  description = "Stage execution ARN. Useful for scoping Lambda permissions to a specific stage."
+  value       = module.stage.stage_execution_arn
+}
+
 output "invoke_url" {
   description = "Invoke URL for the deployed stage."
   value       = module.stage.invoke_url
@@ -71,6 +86,11 @@ output "invoke_url" {
 output "access_log_group_name" {
   description = "Access log group name when created by module."
   value       = module.stage.access_log_group_name
+}
+
+output "access_log_group_arn" {
+  description = "Access log group ARN when created by module. Useful for subscription filters and cross-account log delivery."
+  value       = module.stage.access_log_group_arn
 }
 
 output "cloudwatch_metric_alarm_arns" {
@@ -102,4 +122,24 @@ output "custom_domain_regional_domain_name" {
 output "custom_domain_regional_zone_id" {
   description = "Regional zone ID for DNS alias when custom domain is enabled."
   value       = var.create_domain_name ? module.domain[0].regional_zone_id : null
+}
+
+output "dashboard_name" {
+  description = "CloudWatch dashboard name (null if not created)."
+  value       = try(aws_cloudwatch_dashboard.this[0].dashboard_name, null)
+}
+
+output "dashboard_arn" {
+  description = "CloudWatch dashboard ARN (null if not created)."
+  value       = try(aws_cloudwatch_dashboard.this[0].dashboard_arn, null)
+}
+
+output "cloudwatch_metric_anomaly_alarm_arns" {
+  description = "Map of CloudWatch anomaly alarm ARNs keyed by metric_anomaly_alarms key."
+  value       = { for k, v in aws_cloudwatch_metric_alarm.apigw_anomaly : k => v.arn }
+}
+
+output "cloudwatch_metric_anomaly_alarm_names" {
+  description = "Map of CloudWatch anomaly alarm names keyed by metric_anomaly_alarms key."
+  value       = { for k, v in aws_cloudwatch_metric_alarm.apigw_anomaly : k => v.alarm_name }
 }

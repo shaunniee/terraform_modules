@@ -2,13 +2,18 @@
 
 Composable REST API module built with submodules for:
 - API definition
-- resources (path tree)
-- methods
+- resources (path tree, up to 5 levels deep with depth validation)
+- methods with request validators
 - integrations
 - method/integration responses
+- gateway responses (DEFAULT_4XX, DEFAULT_5XX, UNAUTHORIZED, etc.)
 - deployment + stage
-- optional custom domain + Route53 alias
+- optional WAFv2 Web ACL association
+- optional custom domain + Route53 alias (REGIONAL and EDGE support)
 - optional module-managed API Gateway execution role (or external role support)
+- IAM permissions boundary and additional managed policies
+- boolean-first observability with preset alarms (5XXError, 4XXError, Latency p95, IntegrationLatency)
+- extended_statistic support (p95, p99, etc.) on custom metric alarms
 
 ## Basic Example (Lambda Proxy)
 
@@ -252,9 +257,156 @@ Notes:
 - Use `methods[*].authorizer_key` to reference a key from `authorizers`.
 - `methods[*].authorizer_id` is still supported as fallback when you want to attach an external pre-existing authorizer.
 
+## WAF + Gateway Responses Example
+
+```hcl
+module "api" {
+  source = "./aws_api_gateway_rest_api"
+
+  name = "public-api"
+
+  resources = {
+    orders = { path_part = "orders" }
+  }
+
+  methods = {
+    get_orders = {
+      resource_key  = "orders"
+      http_method   = "GET"
+      authorization = "NONE"
+    }
+  }
+
+  integrations = {
+    get_orders_lambda = {
+      method_key              = "get_orders"
+      type                    = "AWS_PROXY"
+      integration_http_method = "POST"
+      uri                     = aws_lambda_function.orders.invoke_arn
+    }
+  }
+
+  gateway_responses = {
+    default_4xx = {
+      response_type = "DEFAULT_4XX"
+      response_parameters = {
+        "gatewayresponse.header.Access-Control-Allow-Origin" = "'*'"
+      }
+      response_templates = {
+        "application/json" = "{\"message\": \"Client error\", \"requestId\": \"$context.requestId\"}"
+      }
+    }
+    default_5xx = {
+      response_type = "DEFAULT_5XX"
+      response_parameters = {
+        "gatewayresponse.header.Access-Control-Allow-Origin" = "'*'"
+      }
+      response_templates = {
+        "application/json" = "{\"message\": \"Internal server error\", \"requestId\": \"$context.requestId\"}"
+      }
+    }
+  }
+
+  web_acl_arn = "arn:aws:wafv2:us-east-1:123456789012:regional/webacl/api-protection/abc123"
+
+  stage_name = "v1"
+}
+```
+
+## Observability Example (Boolean-First Preset Alarms)
+
+```hcl
+module "api" {
+  source = "./aws_api_gateway_rest_api"
+
+  name = "orders-api"
+
+  resources     = { orders = { path_part = "orders" } }
+  methods       = { get_orders = { resource_key = "orders", http_method = "GET" } }
+  integrations  = {
+    get_orders_lambda = {
+      method_key              = "get_orders"
+      type                    = "AWS_PROXY"
+      integration_http_method = "POST"
+      uri                     = aws_lambda_function.orders.invoke_arn
+    }
+  }
+
+  # Enable preset alarms: 5XXError >= 1, 4XXError >= 50, Latency p95 > 3s, IntegrationLatency avg > 2s
+  observability = {
+    enabled                = true
+    default_alarm_actions  = [aws_sns_topic.ops_alerts.arn]
+  }
+
+  # Add custom p99 latency alarm alongside presets
+  cloudwatch_metric_alarms = {
+    latency_p99 = {
+      metric_name         = "Latency"
+      extended_statistic  = "p99"
+      period              = 60
+      evaluation_periods  = 3
+      threshold           = 5000
+      comparison_operator = "GreaterThanThreshold"
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = [aws_sns_topic.ops_alerts.arn]
+    }
+  }
+
+  stage_name = "v1"
+}
+```
+
+## Request Validators Example
+
+```hcl
+module "api" {
+  source = "./aws_api_gateway_rest_api"
+
+  name = "validated-api"
+
+  request_validators = {
+    body_only = {
+      name                        = "validate-body"
+      validate_request_body       = true
+      validate_request_parameters = false
+    }
+    params_only = {
+      name                        = "validate-params"
+      validate_request_body       = false
+      validate_request_parameters = true
+    }
+  }
+
+  resources = {
+    orders = { path_part = "orders" }
+  }
+
+  methods = {
+    post_orders = {
+      resource_key         = "orders"
+      http_method          = "POST"
+      request_validator_id = module.api.request_validator_ids["body_only"]
+    }
+  }
+
+  integrations = {
+    post_orders_lambda = {
+      method_key              = "post_orders"
+      type                    = "AWS_PROXY"
+      integration_http_method = "POST"
+      uri                     = aws_lambda_function.orders.invoke_arn
+    }
+  }
+
+  stage_name = "v1"
+}
+```
+
 ## Dynamic Inputs Overview
 
-- `resources`: build arbitrary nested path trees with `parent_key`
+- `resources`: build arbitrary nested path trees with `parent_key` (max 5 levels, validated)
+- `gateway_responses`: customize default error responses (DEFAULT_4XX, DEFAULT_5XX, UNAUTHORIZED, etc.)
+- `request_validators`: create request validators for body/parameter validation
 - `authorizers`: optionally create API Gateway authorizers from input
 - `methods`: attach any HTTP method + auth mode per resource
 - `integrations`: mix `AWS_PROXY`, `HTTP_PROXY`, `MOCK`, etc.
@@ -722,13 +874,30 @@ high_integration_latency = {
   - Final log line format.
   - Must include fields useful for debugging/auditing (`requestId`, `status`, etc.).
 
-### CloudWatch Alarm Inputs
+### Observability Inputs
+
+- `observability`:
+  - Boolean-first toggle for preset alarms matching the Lambda module pattern.
+  - When `enabled = true` and `enable_default_alarms = true` (default), creates preset alarms:
+    - `high_5xx_errors`: 5XXError Sum >= 1 over 1 minute
+    - `high_4xx_errors`: 4XXError Sum >= 50 over 3 minutes
+    - `high_latency_p95`: Latency p95 > 3000ms over 3 minutes
+    - `high_integration_latency`: IntegrationLatency Average > 2000ms over 3 minutes
+  - Preset alarms use `default_alarm_actions`, `default_ok_actions`, `default_insufficient_data_actions`.
+  - Custom `cloudwatch_metric_alarms` entries are merged with presets (user entries override).
 
 - `cloudwatch_metric_alarms`:
   - Map of alarm definitions created as `aws_cloudwatch_metric_alarm` resources.
+  - Supports both `statistic` (Sum, Average, etc.) and `extended_statistic` (p95, p99, etc.).
   - Default dimensions are `ApiName=<api name>` and `Stage=<stage name>`.
   - Alarm map key is used in default alarm name `<api>-<stage>-<key>` unless `alarm_name` is provided.
   - Set `enabled = false` on an entry to keep it in config but skip creation.
+
+### WAF Input
+
+- `web_acl_arn`:
+  - WAFv2 Web ACL ARN to associate with the API Gateway stage.
+  - When set, creates `aws_wafv2_web_acl_association`.
 
 ### Custom Domain & DNS Inputs
 
@@ -764,10 +933,19 @@ high_integration_latency = {
 - `execution_role_name`
 - `execution_role_arn`
 - `rest_api_execution_arn`
+- `deployment_id`
+- `stage_name`
+- `stage_arn`
+- `stage_execution_arn` (for scoping Lambda permissions to a specific stage)
 - `invoke_url`
+- `access_log_group_name`
+- `access_log_group_arn` (for subscription filters, cross-account log delivery)
 - `cloudwatch_metric_alarm_arns`
 - `cloudwatch_metric_alarm_names`
 - `resource_ids`
+- `request_validator_ids`
 - `methods_index`
 - `integration_ids`
 - `custom_domain_name`
+- `custom_domain_regional_domain_name`
+- `custom_domain_regional_zone_id`

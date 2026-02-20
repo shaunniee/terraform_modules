@@ -8,6 +8,8 @@ locals {
   use_s3_source    = var.s3_bucket != null || var.s3_key != null
   package_hash     = var.source_code_hash != null ? var.source_code_hash : (var.filename != null ? filebase64sha256(var.filename) : null)
 
+  use_vpc = length(var.vpc_subnet_ids) > 0 && length(var.vpc_security_group_ids) > 0
+
   dlq_type = var.dead_letter_target_arn == null ? null : try(element(split(":", var.dead_letter_target_arn), 2), null)
   dlq_name = var.dead_letter_target_arn == null ? null : try(element(split(":", var.dead_letter_target_arn), 5), null)
 
@@ -18,6 +20,7 @@ locals {
   }
 
   observability_enabled = try(var.observability.enabled, false)
+  dashboard_enabled     = local.observability_enabled && try(var.observability.enable_dashboard, false)
 
   default_metric_alarms = local.observability_enabled && try(var.observability.enable_default_alarms, true) ? {
     errors = {
@@ -60,7 +63,7 @@ locals {
       namespace           = "AWS/Lambda"
       period              = 60
       extended_statistic  = "p95"
-      threshold           = 500
+      threshold           = var.timeout * 1000 * 0.8
       treat_missing_data  = "notBreaching"
       alarm_actions       = try(var.observability.default_alarm_actions, [])
       ok_actions          = try(var.observability.default_ok_actions, [])
@@ -68,9 +71,27 @@ locals {
       dimensions          = {}
       tags                = {}
     }
+    concurrent_executions = var.reserved_concurrent_executions > 0 ? {
+      enabled             = true
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 1
+      metric_name         = "ConcurrentExecutions"
+      namespace           = "AWS/Lambda"
+      period              = 60
+      statistic           = "Maximum"
+      threshold           = floor(var.reserved_concurrent_executions * 0.8)
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = try(var.observability.default_alarm_actions, [])
+      ok_actions          = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions          = {}
+      tags                = {}
+    } : null
   } : {}
 
-  effective_metric_alarms = merge(local.default_metric_alarms, var.metric_alarms)
+  filtered_default_metric_alarms = { for k, v in local.default_metric_alarms : k => v if v != null }
+
+  effective_metric_alarms = merge(local.filtered_default_metric_alarms, var.metric_alarms)
 
   enabled_metric_alarms = {
     for alarm_key, alarm in local.effective_metric_alarms :
@@ -126,10 +147,16 @@ locals {
     filter_key => filter
     if try(filter.enabled, true)
   }
+
+  enabled_log_metric_filters = {
+    for filter_key, filter in var.log_metric_filters :
+    filter_key => filter
+    if try(filter.enabled, true)
+  }
 }
 
 data "aws_cloudwatch_log_group" "lambda_existing" {
-  count = !var.create_cloudwatch_log_group && length(local.enabled_dlq_log_metric_filters) > 0 ? 1 : 0
+  count = !var.create_cloudwatch_log_group && (length(local.enabled_dlq_log_metric_filters) > 0 || length(local.enabled_log_metric_filters) > 0) ? 1 : 0
 
   name = local.log_group_name
 }
@@ -137,7 +164,8 @@ data "aws_cloudwatch_log_group" "lambda_existing" {
 resource "aws_iam_role" "lambda_role" {
   count = local.create_role ? 1 : 0
 
-  name = "${var.function_name}-lambda-role"
+  name                 = "${var.function_name}-lambda-role"
+  permissions_boundary = var.permissions_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -178,6 +206,46 @@ resource "aws_iam_role_policy_attachment" "xray_tracing" {
   policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
 }
 
+resource "aws_iam_role_policy_attachment" "vpc_access" {
+  count = local.create_role && local.use_vpc ? 1 : 0
+
+  role       = aws_iam_role.lambda_role[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "dlq" {
+  count = local.create_role && var.dead_letter_target_arn != null ? 1 : 0
+
+  name = "${var.function_name}-dlq-publish"
+  role = aws_iam_role.lambda_role[0].name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = local.dlq_type == "sqs" ? ["sqs:SendMessage"] : ["sns:Publish"]
+        Resource = var.dead_letter_target_arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "additional" {
+  for_each = local.create_role ? toset(var.additional_policy_arns) : toset([])
+
+  role       = aws_iam_role.lambda_role[0].name
+  policy_arn = each.value
+}
+
+resource "aws_iam_role_policy" "inline" {
+  for_each = local.create_role ? var.inline_policies : {}
+
+  name   = each.key
+  role   = aws_iam_role.lambda_role[0].name
+  policy = each.value
+}
+
 resource "aws_cloudwatch_log_group" "lambda" {
   count = local.create_log_group ? 1 : 0
 
@@ -210,8 +278,11 @@ resource "aws_lambda_function" "this" {
   kms_key_arn                    = var.kms_key_arn
   source_code_hash               = local.package_hash
 
-  environment {
-    variables = var.environment_variables
+  dynamic "environment" {
+    for_each = length(var.environment_variables) > 0 ? [1] : []
+    content {
+      variables = var.environment_variables
+    }
   }
 
   ephemeral_storage {
@@ -226,6 +297,14 @@ resource "aws_lambda_function" "this" {
     Name = "${var.function_name}-function"
   })
 
+  dynamic "vpc_config" {
+    for_each = local.use_vpc ? [1] : []
+    content {
+      subnet_ids         = var.vpc_subnet_ids
+      security_group_ids = var.vpc_security_group_ids
+    }
+  }
+
   dynamic "dead_letter_config" {
     for_each = var.dead_letter_target_arn != null ? [1] : []
     content {
@@ -237,6 +316,7 @@ resource "aws_lambda_function" "this" {
     aws_iam_role_policy_attachment.basic_execution,
     aws_iam_role_policy_attachment.monitoring,
     aws_iam_role_policy_attachment.xray_tracing,
+    aws_iam_role_policy_attachment.vpc_access,
     aws_cloudwatch_log_group.lambda
   ]
 
@@ -249,6 +329,11 @@ resource "aws_lambda_function" "this" {
     precondition {
       condition     = !local.use_s3_source || (var.s3_bucket != null && var.s3_key != null)
       error_message = "When using S3 source, both s3_bucket and s3_key are required."
+    }
+
+    precondition {
+      condition     = (length(var.vpc_subnet_ids) > 0) == (length(var.vpc_security_group_ids) > 0)
+      error_message = "vpc_subnet_ids and vpc_security_group_ids must both be provided or both be empty."
     }
   }
 }
@@ -373,6 +458,28 @@ resource "aws_cloudwatch_metric_alarm" "dlq" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "this" {
+  for_each = local.enabled_log_metric_filters
+
+  name           = "${var.function_name}-${each.key}"
+  log_group_name = local.log_group_name
+  pattern        = each.value.pattern
+
+  metric_transformation {
+    namespace     = each.value.metric_namespace
+    name          = each.value.metric_name
+    value         = try(each.value.metric_value, "1")
+    default_value = try(each.value.default_value, null)
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.create_cloudwatch_log_group || try(data.aws_cloudwatch_log_group.lambda_existing[0].name, null) != null
+      error_message = "When create_cloudwatch_log_group=false and log_metric_filters are configured, the log group /aws/lambda/<function_name> must already exist."
+    }
+  }
+}
+
 resource "aws_cloudwatch_log_metric_filter" "dlq" {
   for_each = local.enabled_dlq_log_metric_filters
 
@@ -398,6 +505,141 @@ resource "aws_cloudwatch_log_metric_filter" "dlq" {
       error_message = "When create_cloudwatch_log_group=false and dlq_log_metric_filters are configured, the log group /aws/lambda/<function_name> must already exist."
     }
   }
+}
+
+# =============================================================================
+# CloudWatch Dashboard
+# =============================================================================
+
+resource "aws_cloudwatch_dashboard" "this" {
+  count = local.dashboard_enabled ? 1 : 0
+
+  dashboard_name = substr("lambda-${var.function_name}", 0, 255)
+
+  dashboard_body = jsonencode({
+    widgets = concat(
+      # Row 1: Invocations & Errors
+      [
+        {
+          type   = "metric"
+          x      = 0
+          y      = 0
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Invocations"
+            region  = data.aws_region.current.name
+            stat    = "Sum"
+            period  = 300
+            metrics = [
+              ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.this.function_name]
+            ]
+          }
+        },
+        {
+          type   = "metric"
+          x      = 12
+          y      = 0
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Errors"
+            region  = data.aws_region.current.name
+            stat    = "Sum"
+            period  = 300
+            metrics = [
+              ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.this.function_name]
+            ]
+          }
+        }
+      ],
+      # Row 2: Duration & Throttles
+      [
+        {
+          type   = "metric"
+          x      = 0
+          y      = 6
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Duration (ms)"
+            region  = data.aws_region.current.name
+            period  = 300
+            metrics = [
+              ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.this.function_name, { stat = "Average", label = "Average" }],
+              ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.this.function_name, { stat = "p95", label = "p95" }],
+              ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.this.function_name, { stat = "Maximum", label = "Max" }]
+            ]
+          }
+        },
+        {
+          type   = "metric"
+          x      = 12
+          y      = 6
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Throttles"
+            region  = data.aws_region.current.name
+            stat    = "Sum"
+            period  = 300
+            metrics = [
+              ["AWS/Lambda", "Throttles", "FunctionName", aws_lambda_function.this.function_name]
+            ]
+          }
+        }
+      ],
+      # Row 3: Concurrent Executions & Iterator Age (if applicable)
+      [
+        {
+          type   = "metric"
+          x      = 0
+          y      = 12
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Concurrent Executions"
+            region  = data.aws_region.current.name
+            stat    = "Maximum"
+            period  = 300
+            metrics = [
+              ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", aws_lambda_function.this.function_name]
+            ]
+          }
+        },
+        {
+          type   = "metric"
+          x      = 12
+          y      = 12
+          width  = 12
+          height = 6
+          properties = {
+            title   = "Unreserved Concurrent Executions"
+            region  = data.aws_region.current.name
+            stat    = "Maximum"
+            period  = 300
+            metrics = [
+              ["AWS/Lambda", "UnreservedConcurrentExecutions"]
+            ]
+          }
+        }
+      ]
+    )
+  })
+}
+
+data "aws_region" "current" {}
+
+resource "aws_lambda_permission" "triggers" {
+  for_each = var.allowed_triggers
+
+  statement_id  = each.key
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.this.function_name
+  principal     = each.value.principal
+  source_arn    = try(each.value.source_arn, null)
+  source_account = try(each.value.source_account, null)
+  qualifier     = try(each.value.qualifier, null)
 }
 
 resource "aws_lambda_alias" "this" {

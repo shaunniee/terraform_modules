@@ -59,6 +59,22 @@ locals {
       dimensions          = {}
       tags                = {}
     }
+    conditional_check_failed_requests = {
+      enabled             = true
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 2
+      metric_name         = "ConditionalCheckFailedRequests"
+      namespace           = "AWS/DynamoDB"
+      period              = 60
+      statistic           = "Sum"
+      threshold           = 20
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = try(var.observability.default_alarm_actions, [])
+      ok_actions          = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions          = {}
+      tags                = {}
+    }
     successful_request_latency_p95 = {
       enabled             = true
       comparison_operator = "GreaterThanOrEqualToThreshold"
@@ -77,7 +93,84 @@ locals {
     }
   } : {}
 
-  effective_cloudwatch_metric_alarms = merge(local.default_cloudwatch_metric_alarms, var.cloudwatch_metric_alarms)
+  default_gsi_throttle_alarms = local.observability_enabled && try(var.observability.enable_default_alarms, true) && length(var.global_secondary_indexes) > 0 ? merge([
+    for g in var.global_secondary_indexes : {
+      "gsi_${g.name}_read_throttle" = {
+        enabled             = true
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        evaluation_periods  = 1
+        metric_name         = "ReadThrottleEvents"
+        namespace           = "AWS/DynamoDB"
+        period              = 60
+        statistic           = "Sum"
+        threshold           = 1
+        treat_missing_data  = "notBreaching"
+        alarm_actions       = try(var.observability.default_alarm_actions, [])
+        ok_actions          = try(var.observability.default_ok_actions, [])
+        insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+        dimensions          = { GlobalSecondaryIndexName = g.name }
+        tags                = {}
+      }
+      "gsi_${g.name}_write_throttle" = {
+        enabled             = true
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        evaluation_periods  = 1
+        metric_name         = "WriteThrottleEvents"
+        namespace           = "AWS/DynamoDB"
+        period              = 60
+        statistic           = "Sum"
+        threshold           = 1
+        treat_missing_data  = "notBreaching"
+        alarm_actions       = try(var.observability.default_alarm_actions, [])
+        ok_actions          = try(var.observability.default_ok_actions, [])
+        insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+        dimensions          = { GlobalSecondaryIndexName = g.name }
+        tags                = {}
+      }
+    }
+  ]...) : {}
+
+  default_provisioned_capacity_alarms = local.observability_enabled && try(var.observability.enable_default_alarms, true) && var.billing_mode == "PROVISIONED" ? {
+    read_capacity_utilization = {
+      enabled             = true
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 2
+      metric_name         = "ConsumedReadCapacityUnits"
+      namespace           = "AWS/DynamoDB"
+      period              = 300
+      statistic           = "Average"
+      threshold           = coalesce(var.read_capacity, 1) * 0.8
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = try(var.observability.default_alarm_actions, [])
+      ok_actions          = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions          = {}
+      tags                = {}
+    }
+    write_capacity_utilization = {
+      enabled             = true
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 2
+      metric_name         = "ConsumedWriteCapacityUnits"
+      namespace           = "AWS/DynamoDB"
+      period              = 300
+      statistic           = "Average"
+      threshold           = coalesce(var.write_capacity, 1) * 0.8
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = try(var.observability.default_alarm_actions, [])
+      ok_actions          = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions          = {}
+      tags                = {}
+    }
+  } : {}
+
+  effective_cloudwatch_metric_alarms = merge(
+    local.default_cloudwatch_metric_alarms,
+    local.default_gsi_throttle_alarms,
+    local.default_provisioned_capacity_alarms,
+    var.cloudwatch_metric_alarms
+  )
 
   enabled_cloudwatch_metric_alarms = {
     for alarm_key, alarm in local.effective_cloudwatch_metric_alarms :
@@ -168,6 +261,25 @@ locals {
     ? [for g in var.global_secondary_indexes : g.name]
     : try(local.effective_contributor_insights.global_secondary_index_names, [])
   )
+
+  # Auto-scaling
+  autoscaling_enabled = try(var.autoscaling.enabled, false) && var.billing_mode == "PROVISIONED"
+
+  gsi_autoscaling_map = local.autoscaling_enabled ? {
+    for g in var.global_secondary_indexes : g.name => {
+      read_min           = coalesce(try(var.autoscaling.gsi_defaults.read_min_capacity, null), var.autoscaling.read_min_capacity)
+      read_max           = coalesce(try(var.autoscaling.gsi_defaults.read_max_capacity, null), var.autoscaling.read_max_capacity)
+      write_min          = coalesce(try(var.autoscaling.gsi_defaults.write_min_capacity, null), var.autoscaling.write_min_capacity)
+      write_max          = coalesce(try(var.autoscaling.gsi_defaults.write_max_capacity, null), var.autoscaling.write_max_capacity)
+      read_target        = coalesce(try(var.autoscaling.gsi_defaults.read_target_utilization, null), var.autoscaling.read_target_utilization)
+      write_target       = coalesce(try(var.autoscaling.gsi_defaults.write_target_utilization, null), var.autoscaling.write_target_utilization)
+      scale_in_cooldown  = coalesce(try(var.autoscaling.gsi_defaults.scale_in_cooldown, null), var.autoscaling.scale_in_cooldown)
+      scale_out_cooldown = coalesce(try(var.autoscaling.gsi_defaults.scale_out_cooldown, null), var.autoscaling.scale_out_cooldown)
+    }
+  } : {}
+
+  # Dashboard
+  dashboard_enabled = local.observability_enabled && try(var.observability.enable_dashboard, false)
 }
 
 data "aws_partition" "current" {
@@ -202,11 +314,9 @@ resource "aws_dynamodb_table" "this" {
   dynamic "global_secondary_index" {
     for_each = var.global_secondary_indexes
     content {
-      name = global_secondary_index.value.name
-
-        hash_key = global_secondary_index.value.hash_key
-        range_key = try(global_secondary_index.value.range_key, null)
-    
+      name      = global_secondary_index.value.name
+      hash_key  = global_secondary_index.value.hash_key
+      range_key = try(global_secondary_index.value.range_key, null)
 
       projection_type    = global_secondary_index.value.projection_type
       non_key_attributes = global_secondary_index.value.projection_type == "INCLUDE" ? global_secondary_index.value.non_key_attributes : null
@@ -333,6 +443,11 @@ resource "aws_dynamodb_table" "this" {
       condition     = !var.ttl.enabled || (try(var.ttl.attribute_name, null) != null && trimspace(var.ttl.attribute_name) != "")
       error_message = "ttl.attribute_name is required when ttl.enabled = true."
     }
+
+    precondition {
+      condition     = !try(var.autoscaling.enabled, false) || var.billing_mode == "PROVISIONED"
+      error_message = "autoscaling requires billing_mode = PROVISIONED."
+    }
   }
 }
 
@@ -383,7 +498,7 @@ resource "aws_cloudwatch_metric_alarm" "dynamodb_anomaly" {
 
   metric_query {
     id          = "m1"
-    return_data = true
+    return_data = false
 
     metric {
       metric_name = each.value.metric_name
@@ -505,7 +620,7 @@ data "aws_iam_policy_document" "cloudtrail_to_cwlogs" {
       "logs:DescribeLogStreams"
     ]
     resources = [
-      "*"
+      local.cloudtrail_log_group_arn
     ]
   }
 }
@@ -516,4 +631,231 @@ resource "aws_iam_role_policy" "cloudtrail_to_cwlogs" {
   name   = "${var.table_name}-cloudtrail-cwlogs"
   role   = aws_iam_role.cloudtrail_to_cwlogs[0].id
   policy = data.aws_iam_policy_document.cloudtrail_to_cwlogs[0].json
+}
+
+# =============================================================================
+# Auto-scaling resources
+# =============================================================================
+
+resource "aws_appautoscaling_target" "table_read" {
+  count = local.autoscaling_enabled ? 1 : 0
+
+  max_capacity       = var.autoscaling.read_max_capacity
+  min_capacity       = var.autoscaling.read_min_capacity
+  resource_id        = "table/${aws_dynamodb_table.this.name}"
+  scalable_dimension = "dynamodb:table:ReadCapacityUnits"
+  service_namespace  = "dynamodb"
+}
+
+resource "aws_appautoscaling_policy" "table_read" {
+  count = local.autoscaling_enabled ? 1 : 0
+
+  name               = "${var.table_name}-table-read-autoscaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.table_read[0].resource_id
+  scalable_dimension = aws_appautoscaling_target.table_read[0].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.table_read[0].service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "DynamoDBReadCapacityUtilization"
+    }
+    target_value       = var.autoscaling.read_target_utilization
+    scale_in_cooldown  = var.autoscaling.scale_in_cooldown
+    scale_out_cooldown = var.autoscaling.scale_out_cooldown
+  }
+}
+
+resource "aws_appautoscaling_target" "table_write" {
+  count = local.autoscaling_enabled ? 1 : 0
+
+  max_capacity       = var.autoscaling.write_max_capacity
+  min_capacity       = var.autoscaling.write_min_capacity
+  resource_id        = "table/${aws_dynamodb_table.this.name}"
+  scalable_dimension = "dynamodb:table:WriteCapacityUnits"
+  service_namespace  = "dynamodb"
+}
+
+resource "aws_appautoscaling_policy" "table_write" {
+  count = local.autoscaling_enabled ? 1 : 0
+
+  name               = "${var.table_name}-table-write-autoscaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.table_write[0].resource_id
+  scalable_dimension = aws_appautoscaling_target.table_write[0].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.table_write[0].service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "DynamoDBWriteCapacityUtilization"
+    }
+    target_value       = var.autoscaling.write_target_utilization
+    scale_in_cooldown  = var.autoscaling.scale_in_cooldown
+    scale_out_cooldown = var.autoscaling.scale_out_cooldown
+  }
+}
+
+resource "aws_appautoscaling_target" "gsi_read" {
+  for_each = local.gsi_autoscaling_map
+
+  max_capacity       = each.value.read_max
+  min_capacity       = each.value.read_min
+  resource_id        = "table/${aws_dynamodb_table.this.name}/index/${each.key}"
+  scalable_dimension = "dynamodb:index:ReadCapacityUnits"
+  service_namespace  = "dynamodb"
+}
+
+resource "aws_appautoscaling_policy" "gsi_read" {
+  for_each = local.gsi_autoscaling_map
+
+  name               = "${var.table_name}-gsi-${each.key}-read-autoscaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.gsi_read[each.key].resource_id
+  scalable_dimension = aws_appautoscaling_target.gsi_read[each.key].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.gsi_read[each.key].service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "DynamoDBReadCapacityUtilization"
+    }
+    target_value       = each.value.read_target
+    scale_in_cooldown  = each.value.scale_in_cooldown
+    scale_out_cooldown = each.value.scale_out_cooldown
+  }
+}
+
+resource "aws_appautoscaling_target" "gsi_write" {
+  for_each = local.gsi_autoscaling_map
+
+  max_capacity       = each.value.write_max
+  min_capacity       = each.value.write_min
+  resource_id        = "table/${aws_dynamodb_table.this.name}/index/${each.key}"
+  scalable_dimension = "dynamodb:index:WriteCapacityUnits"
+  service_namespace  = "dynamodb"
+}
+
+resource "aws_appautoscaling_policy" "gsi_write" {
+  for_each = local.gsi_autoscaling_map
+
+  name               = "${var.table_name}-gsi-${each.key}-write-autoscaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.gsi_write[each.key].resource_id
+  scalable_dimension = aws_appautoscaling_target.gsi_write[each.key].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.gsi_write[each.key].service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "DynamoDBWriteCapacityUtilization"
+    }
+    target_value       = each.value.write_target
+    scale_in_cooldown  = each.value.scale_in_cooldown
+    scale_out_cooldown = each.value.scale_out_cooldown
+  }
+}
+
+# =============================================================================
+# CloudWatch Dashboard
+# =============================================================================
+
+resource "aws_cloudwatch_dashboard" "this" {
+  count = local.dashboard_enabled ? 1 : 0
+
+  dashboard_name = "${var.table_name}-dynamodb"
+  dashboard_body = jsonencode({
+    widgets = concat(
+      [
+        {
+          type   = "metric"
+          x      = 0
+          y      = 0
+          width  = 12
+          height = 6
+          properties = {
+            title   = "${var.table_name} - Consumed Capacity Units"
+            metrics = [
+              ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", aws_dynamodb_table.this.name, { stat = "Sum", label = "Read CU" }],
+              ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", aws_dynamodb_table.this.name, { stat = "Sum", label = "Write CU" }]
+            ]
+            period  = 300
+            view    = "timeSeries"
+            stacked = false
+          }
+        },
+        {
+          type   = "metric"
+          x      = 12
+          y      = 0
+          width  = 12
+          height = 6
+          properties = {
+            title   = "${var.table_name} - Throttled Requests"
+            metrics = [
+              ["AWS/DynamoDB", "ThrottledRequests", "TableName", aws_dynamodb_table.this.name, { stat = "Sum", label = "Throttled" }],
+              ["AWS/DynamoDB", "ReadThrottleEvents", "TableName", aws_dynamodb_table.this.name, { stat = "Sum", label = "Read Throttle" }],
+              ["AWS/DynamoDB", "WriteThrottleEvents", "TableName", aws_dynamodb_table.this.name, { stat = "Sum", label = "Write Throttle" }]
+            ]
+            period  = 300
+            view    = "timeSeries"
+            stacked = false
+          }
+        },
+        {
+          type   = "metric"
+          x      = 0
+          y      = 6
+          width  = 12
+          height = 6
+          properties = {
+            title   = "${var.table_name} - Request Latency (ms)"
+            metrics = [
+              ["AWS/DynamoDB", "SuccessfulRequestLatency", "TableName", aws_dynamodb_table.this.name, { stat = "Average", label = "Average" }],
+              ["AWS/DynamoDB", "SuccessfulRequestLatency", "TableName", aws_dynamodb_table.this.name, { stat = "p95", label = "p95" }],
+              ["AWS/DynamoDB", "SuccessfulRequestLatency", "TableName", aws_dynamodb_table.this.name, { stat = "p99", label = "p99" }]
+            ]
+            period  = 300
+            view    = "timeSeries"
+            stacked = false
+          }
+        },
+        {
+          type   = "metric"
+          x      = 12
+          y      = 6
+          width  = 12
+          height = 6
+          properties = {
+            title   = "${var.table_name} - Errors"
+            metrics = [
+              ["AWS/DynamoDB", "UserErrors", "TableName", aws_dynamodb_table.this.name, { stat = "Sum", label = "User Errors" }],
+              ["AWS/DynamoDB", "SystemErrors", "TableName", aws_dynamodb_table.this.name, { stat = "Sum", label = "System Errors" }],
+              ["AWS/DynamoDB", "ConditionalCheckFailedRequests", "TableName", aws_dynamodb_table.this.name, { stat = "Sum", label = "Conditional Check Failed" }]
+            ]
+            period  = 300
+            view    = "timeSeries"
+            stacked = false
+          }
+        }
+      ],
+      # Per-GSI widgets
+      [for i, g in var.global_secondary_indexes : {
+        type   = "metric"
+        x      = (i % 2) * 12
+        y      = 12 + (floor(i / 2) * 6)
+        width  = 12
+        height = 6
+        properties = {
+          title   = "GSI: ${g.name}"
+          metrics = [
+            ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", aws_dynamodb_table.this.name, "GlobalSecondaryIndexName", g.name, { stat = "Sum", label = "Read CU" }],
+            ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", aws_dynamodb_table.this.name, "GlobalSecondaryIndexName", g.name, { stat = "Sum", label = "Write CU" }],
+            ["AWS/DynamoDB", "ReadThrottleEvents", "TableName", aws_dynamodb_table.this.name, "GlobalSecondaryIndexName", g.name, { stat = "Sum", label = "Read Throttle" }],
+            ["AWS/DynamoDB", "WriteThrottleEvents", "TableName", aws_dynamodb_table.this.name, "GlobalSecondaryIndexName", g.name, { stat = "Sum", label = "Write Throttle" }]
+          ]
+          period  = 300
+          view    = "timeSeries"
+          stacked = false
+        }
+      }]
+    )
+  })
 }

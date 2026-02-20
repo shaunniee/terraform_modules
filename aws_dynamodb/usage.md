@@ -1,6 +1,6 @@
 # AWS DynamoDB Terraform Module
 
-Comprehensive Terraform module for provisioning an AWS DynamoDB table with optional indexes, streams, TTL, encryption, recovery, deletion protection, and Global Tables replicas.
+Comprehensive Terraform module for provisioning an AWS DynamoDB table with optional indexes, streams, TTL, encryption, recovery, deletion protection, Global Tables replicas, auto-scaling, and full observability.
 
 ## What this module manages
 
@@ -14,11 +14,16 @@ This module creates one `aws_dynamodb_table` resource and supports:
 - TTL (Time To Live)
 - Point-in-time recovery (PITR)
 - Server-side encryption (SSE)
-- Deletion protection
+- Deletion protection (defaults to **enabled** for production safety)
 - Table class selection
 - Global Tables replicas (multi-region)
+- **Application Auto Scaling** for PROVISIONED mode (table + GSI read/write capacity)
 - Dynamic CloudWatch metric alarms (including default presets)
+  - ThrottledRequests, UserErrors, SystemErrors, ConditionalCheckFailedRequests, SuccessfulRequestLatency p95
+  - Per-GSI ReadThrottleEvents / WriteThrottleEvents
+  - Capacity utilization alarms for PROVISIONED mode
 - CloudWatch anomaly detection alarms
+- **CloudWatch Dashboard** with table and per-GSI metrics
 - Contributor Insights (table and GSI) for hot-key tracing/analysis
 - Optional CloudTrail data-event logging for table audit logs (with optional CloudWatch Logs + KMS)
 - Input validation and lifecycle preconditions for safer plans
@@ -27,7 +32,8 @@ This module creates one `aws_dynamodb_table` resource and supports:
 
 ## Prerequisites
 
-- Terraform version compatible with your AWS provider configuration
+- Terraform >= 1.5
+- AWS provider >= 5.0
 - AWS provider configured with credentials and region
 - IAM permissions for DynamoDB (and KMS if customer-managed keys are used)
 
@@ -329,8 +335,9 @@ module "dynamodb_orders" {
 
 Notes:
 - Metrics/alarms: module injects `TableName=<table name>` into alarm dimensions.
-- Preset alarms: when `observability.enabled = true` and `observability.enable_default_alarms = true`, defaults are created for `ThrottledRequests`, `UserErrors`, `SystemErrors`, and `SuccessfulRequestLatency` (p95).
+- Preset alarms: when `observability.enabled = true` and `observability.enable_default_alarms = true`, defaults are created for `ThrottledRequests`, `UserErrors`, `SystemErrors`, `ConditionalCheckFailedRequests`, and `SuccessfulRequestLatency` (p95). For PROVISIONED billing mode, `read_capacity_utilization` and `write_capacity_utilization` alarms are also created. Per-GSI `ReadThrottleEvents` and `WriteThrottleEvents` alarms are created for each GSI.
 - Anomaly alarms: use CloudWatch `ANOMALY_DETECTION_BAND` via `cloudwatch_metric_anomaly_alarms`.
+- Dashboard: set `observability.enable_dashboard = true` to create a CloudWatch dashboard with consumed capacity, throttle, latency, error, and per-GSI widgets.
 - Tracing/insights: DynamoDB does not support native X-Ray segment tracing for table operations; Contributor Insights is the closest built-in per-table/per-GSI hot-key analysis feature.
 - Logging: CloudTrail data events provide API audit logging for table reads/writes, with optional CloudWatch Logs delivery.
 - IAM mode for CloudTrail -> CloudWatch Logs is explicit: set `create_cloud_watch_logs_role = true` to let the module create role/policy, or set it to `false` and provide `cloud_watch_logs_role_arn` from external IAM.
@@ -511,6 +518,105 @@ cloudtrail_data_events = {
 }
 ```
 
+### 7) Auto-scaling (PROVISIONED billing mode)
+
+Enable auto-scaling for table and GSI read/write capacity with target tracking policies.
+
+```hcl
+module "dynamodb_products" {
+  source = "./aws_dynamodb"
+
+  table_name = "products"
+  hash_key   = "tenant_id"
+  range_key  = "product_id"
+
+  billing_mode   = "PROVISIONED"
+  read_capacity  = 10
+  write_capacity = 10
+
+  attributes = [
+    { name = "tenant_id", type = "S" },
+    { name = "product_id", type = "S" },
+    { name = "category", type = "S" }
+  ]
+
+  global_secondary_indexes = [
+    {
+      name            = "gsi_category"
+      hash_key        = "category"
+      projection_type = "ALL"
+      read_capacity   = 5
+      write_capacity  = 5
+    }
+  ]
+
+  autoscaling = {
+    enabled                  = true
+    read_min_capacity        = 5
+    read_max_capacity        = 200
+    write_min_capacity       = 5
+    write_max_capacity       = 200
+    read_target_utilization  = 70
+    write_target_utilization = 70
+    scale_in_cooldown        = 60
+    scale_out_cooldown       = 60
+
+    # Optional: override defaults for GSIs
+    gsi_defaults = {
+      read_min_capacity  = 3
+      read_max_capacity  = 100
+      write_min_capacity = 3
+      write_max_capacity = 100
+    }
+  }
+
+  tags = {
+    Environment = "prod"
+    Service     = "catalog"
+  }
+}
+```
+
+Notes:
+- Auto-scaling is only valid with `billing_mode = "PROVISIONED"`. A precondition enforces this.
+- Table and all GSIs get auto-scaling targets and policies.
+- `gsi_defaults` lets you override capacity bounds/targets for GSIs independently. Any field omitted falls back to the table-level setting.
+
+### 8) CloudWatch Dashboard
+
+Enable a pre-built CloudWatch dashboard with table and per-GSI observability widgets.
+
+```hcl
+module "dynamodb_orders" {
+  source = "./aws_dynamodb"
+
+  table_name = "orders"
+  hash_key   = "pk"
+  range_key  = "sk"
+
+  billing_mode = "PAY_PER_REQUEST"
+
+  attributes = [
+    { name = "pk", type = "S" },
+    { name = "sk", type = "S" }
+  ]
+
+  observability = {
+    enabled                   = true
+    enable_default_alarms     = true
+    enable_dashboard          = true
+    default_alarm_actions     = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+  }
+}
+```
+
+The dashboard includes:
+- **Consumed Capacity Units** (Read/Write) — time series
+- **Throttled Requests** (ThrottledRequests, ReadThrottleEvents, WriteThrottleEvents) — time series
+- **Request Latency** (Average, p95, p99) — time series
+- **Errors** (UserErrors, SystemErrors, ConditionalCheckFailedRequests) — time series
+- **Per-GSI widgets** (consumed capacity + throttle events) — one widget per GSI
+
 ---
 
 ## Inputs
@@ -539,14 +645,15 @@ cloudtrail_data_events = {
 | `stream_view_type` | `string` | `null` | `KEYS_ONLY`, `NEW_IMAGE`, `OLD_IMAGE`, `NEW_AND_OLD_IMAGES` |
 | `point_in_time_recovery_enabled` | `bool` | `true` | Enable PITR |
 | `server_side_encryption` | `object({ enabled = bool, kms_key_arn = optional(string) })` | `{ enabled = true, kms_key_arn = null }` | SSE config |
-| `deletion_protection_enabled` | `bool` | `false` | Enable deletion protection |
+| `deletion_protection_enabled` | `bool` | `true` | Enable deletion protection (defaults to true for production safety) |
 | `table_class` | `string` | `"STANDARD"` | `STANDARD` or `STANDARD_INFREQUENT_ACCESS` |
 | `tags` | `map(string)` | `{}` | Tags to apply |
-| `observability` | `object({ enabled, enable_default_alarms, enable_anomaly_detection_alarms, enable_contributor_insights_table, enable_contributor_insights_all_global_secondary_indexes, enable_cloudtrail_data_events, cloudtrail_s3_bucket_name, default_alarm_actions, default_ok_actions, default_insufficient_data_actions })` | disabled | Boolean-first observability toggles and shared alarm actions |
+| `observability` | `object({ enabled, enable_default_alarms, enable_anomaly_detection_alarms, enable_contributor_insights_table, enable_contributor_insights_all_global_secondary_indexes, enable_cloudtrail_data_events, enable_dashboard, cloudtrail_s3_bucket_name, default_alarm_actions, default_ok_actions, default_insufficient_data_actions })` | disabled | Boolean-first observability toggles and shared alarm actions |
 | `cloudwatch_metric_alarms` | `map(object(...))` | `{}` | CloudWatch metric alarms for DynamoDB table metrics |
 | `cloudwatch_metric_anomaly_alarms` | `map(object(...))` | `{}` | CloudWatch anomaly detection alarms for DynamoDB table metrics |
 | `contributor_insights` | `object({ table_enabled, all_global_secondary_indexes_enabled, global_secondary_index_names })` | `{ table_enabled = false, all_global_secondary_indexes_enabled = false, global_secondary_index_names = [] }` | Contributor Insights tracing/analysis settings |
 | `cloudtrail_data_events` | `object({ enabled, trail_name, s3_bucket_name, kms_key_id, enable_log_file_validation, include_management_events, read_write_type, cloud_watch_logs_enabled, create_cloud_watch_logs_role, cloud_watch_logs_group_name, cloud_watch_logs_retention_in_days, cloud_watch_logs_role_arn, tags })` | disabled | CloudTrail data-event logging settings for table audit logs |
+| `autoscaling` | `object({ enabled, read_min_capacity, read_max_capacity, write_min_capacity, write_max_capacity, read_target_utilization, write_target_utilization, scale_in_cooldown, scale_out_cooldown, gsi_defaults })` | `{ enabled = false }` | Application Auto Scaling for PROVISIONED billing mode |
 
 ---
 
@@ -573,6 +680,13 @@ cloudtrail_data_events = {
 | `cloudtrail_data_events_trail_name` | CloudTrail name when data-event logging is enabled |
 | `cloudtrail_data_events_cloudwatch_log_group_name` | CloudWatch Log Group name used by CloudTrail logs delivery |
 | `cloudtrail_data_events_cloudwatch_logs_role_arn` | IAM role ARN used by CloudTrail to publish into CloudWatch Logs |
+| `autoscaling_enabled` | Whether auto-scaling is enabled for the table |
+| `autoscaling_table_read_target_arn` | Application Auto Scaling read target resource ID |
+| `autoscaling_table_write_target_arn` | Application Auto Scaling write target resource ID |
+| `autoscaling_gsi_read_targets` | Map of GSI name to Auto Scaling read target resource IDs |
+| `autoscaling_gsi_write_targets` | Map of GSI name to Auto Scaling write target resource IDs |
+| `dashboard_name` | CloudWatch dashboard name (or `null` if disabled) |
+| `dashboard_arn` | CloudWatch dashboard ARN (or `null` if disabled) |
 
 ---
 
@@ -611,6 +725,9 @@ The module enforces input correctness with both variable validation and resource
 - `contributor_insights.all_global_secondary_indexes_enabled` and `contributor_insights.global_secondary_index_names` cannot be set together
 - `table_class` must be `STANDARD` or `STANDARD_INFREQUENT_ACCESS`
 - KMS ARNs (table SSE and replicas) are format-validated when provided
+- `autoscaling.enabled = true` requires `billing_mode = "PROVISIONED"`
+- `autoscaling.read_min_capacity` must be <= `read_max_capacity`
+- `autoscaling.read_target_utilization` must be between 1 and 100
 
 ---
 
@@ -625,11 +742,13 @@ The module enforces input correctness with both variable validation and resource
 ## Best practices
 
 - Prefer `PAY_PER_REQUEST` for variable or unknown traffic patterns.
-- Use `PROVISIONED` only when you intentionally manage throughput.
+- Use `PROVISIONED` with `autoscaling.enabled = true` when you need cost predictability with auto-scaling.
 - Keep index count and projected attributes minimal to control costs.
 - Enable PITR for production workloads.
 - Use customer-managed KMS keys for stricter compliance requirements.
 - Add tags for ownership, cost allocation, and environment segmentation.
+- Enable `observability.enable_dashboard = true` for at-a-glance table health.
+- `deletion_protection_enabled` defaults to `true`; explicitly set `false` only for dev/test environments.
 
 ---
 
@@ -646,6 +765,9 @@ The module enforces input correctness with both variable validation and resource
 
 - **Error:** `ttl.enabled = true` without `attribute_name`  
   **Fix:** set a non-empty TTL attribute name.
+
+- **Error:** `autoscaling.enabled = true` with `PAY_PER_REQUEST` billing  
+  **Fix:** set `billing_mode = "PROVISIONED"` or disable autoscaling.
 
 ---
 
@@ -686,8 +808,19 @@ module "dynamodb" {
     kms_key_arn = null
   }
 
-  deletion_protection_enabled = false
+  deletion_protection_enabled = true
   table_class                 = "STANDARD"
   tags                        = {}
+
+  # Auto-scaling (PROVISIONED mode only)
+  # autoscaling = {
+  #   enabled                  = true
+  #   read_min_capacity        = 5
+  #   read_max_capacity        = 100
+  #   write_min_capacity       = 5
+  #   write_max_capacity       = 100
+  #   read_target_utilization  = 70
+  #   write_target_utilization = 70
+  # }
 }
 ```

@@ -1,10 +1,15 @@
+locals {
+  is_edge = var.endpoint_type == "EDGE"
+}
+
 resource "aws_api_gateway_domain_name" "this" {
   domain_name              = var.domain_name
-  regional_certificate_arn = var.certificate_arn
+  regional_certificate_arn = local.is_edge ? null : var.certificate_arn
+  certificate_arn          = local.is_edge ? var.certificate_arn : null
   security_policy          = var.security_policy
 
   endpoint_configuration {
-    types = ["REGIONAL"]
+    types = [var.endpoint_type]
   }
 
   tags = var.tags
@@ -25,8 +30,8 @@ resource "aws_route53_record" "this" {
   type    = "A"
 
   alias {
-    name                   = aws_api_gateway_domain_name.this.regional_domain_name
-    zone_id                = aws_api_gateway_domain_name.this.regional_zone_id
+    name                   = local.is_edge ? aws_api_gateway_domain_name.this.cloudfront_domain_name : aws_api_gateway_domain_name.this.regional_domain_name
+    zone_id                = local.is_edge ? aws_api_gateway_domain_name.this.cloudfront_zone_id : aws_api_gateway_domain_name.this.regional_zone_id
     evaluate_target_health = false
   }
 }
