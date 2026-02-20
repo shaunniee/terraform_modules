@@ -157,7 +157,7 @@ locals {
   }
 
   effective_anomaly_alarms = local.anomaly_alarms_enabled ? merge(local.default_anomaly_alarms, var.cloudwatch_metric_anomaly_alarms) : {}
-  enabled_anomaly_alarms  = { for k, v in local.effective_anomaly_alarms : k => v if local.anomaly_alarms_enabled }
+  enabled_anomaly_alarms  = { for k, v in local.effective_anomaly_alarms : k => v if try(v.enabled, true) }
 }
 
 # =============================================================================

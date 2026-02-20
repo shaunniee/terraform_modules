@@ -416,6 +416,7 @@ variable "cloudwatch_metric_anomaly_alarms" {
     User-supplied alarms override defaults on key collision.
   EOT
   type = map(object({
+    enabled                  = optional(bool, true)
     metric_name              = string
     comparison_operator      = string
     statistic                = optional(string, "Sum")
