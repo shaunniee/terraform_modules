@@ -1,774 +1,883 @@
-# AWS EventBridge — Deep Reference Notes
-
-> **Audience:** Cloud engineers building and maintaining EventBridge infrastructure.
-> Every section includes the relevant Terraform resource / argument reference and operational notes.
+# AWS EventBridge — Complete Engineering Reference Notes
+> For use inside Terraform modules. Covers Event Buses, Rules, Pipes, Scheduler, Schema Registry, Archive/Replay, and every integration pattern with full Terraform references.
 
 ---
 
 ## Table of Contents
 
-1. [Service Overview](#1-service-overview)
-2. [Core Concepts & Architecture](#2-core-concepts--architecture)
-3. [Event Buses](#3-event-buses)
-4. [Events — Structure & Schema](#4-events--structure--schema)
-5. [Event Pattern Matching](#5-event-pattern-matching)
-6. [Rules](#6-rules)
-7. [Schedule Expressions](#7-schedule-expressions)
-8. [Targets](#8-targets)
-9. [Input Transformation](#9-input-transformation)
-10. [Dead-Letter Queues (DLQ)](#10-dead-letter-queues-dlq)
-11. [Retry Policy](#11-retry-policy)
-12. [Event Archives & Replay](#12-event-archives--replay)
-13. [Cross-Account & Cross-Region Routing](#13-cross-account--cross-region-routing)
-14. [EventBridge Pipes](#14-eventbridge-pipes)
-15. [EventBridge Scheduler](#15-eventbridge-scheduler)
-16. [Schema Registry & Discovery](#16-schema-registry--discovery)
-17. [IAM & Security](#17-iam--security)
-18. [Encryption (KMS)](#18-encryption-kms)
-19. [Service Limits & Quotas](#19-service-limits--quotas)
-20. [CloudWatch Metrics](#20-cloudwatch-metrics)
-21. [Observability — Alarms](#21-observability--alarms)
-22. [Observability — Event Logging](#22-observability--event-logging)
-23. [Observability — Dashboard](#23-observability--dashboard)
-24. [Debugging & Troubleshooting](#24-debugging--troubleshooting)
-25. [Terraform Resource Reference](#25-terraform-resource-reference)
-26. [Best Practices & Patterns](#26-best-practices--patterns)
-27. [This Module — Design Notes](#27-this-module--design-notes)
+1. [Core Concepts](#1-core-concepts)
+2. [Event Buses](#2-event-buses)
+3. [Event Structure](#3-event-structure)
+4. [Rules & Event Patterns](#4-rules--event-patterns)
+5. [Targets](#5-targets)
+6. [Input Transformation](#6-input-transformation)
+7. [Scheduling (EventBridge Scheduler)](#7-scheduling-eventbridge-scheduler)
+8. [EventBridge Pipes](#8-eventbridge-pipes)
+9. [Schema Registry & Discovery](#9-schema-registry--discovery)
+10. [Archive & Replay](#10-archive--replay)
+11. [Cross-Account & Cross-Region Events](#11-cross-account--cross-region-events)
+12. [API Destinations](#12-api-destinations)
+13. [Dead Letter Queues & Error Handling](#13-dead-letter-queues--error-handling)
+14. [IAM & Permissions](#14-iam--permissions)
+15. [Observability — Metrics & Alarms](#15-observability--metrics--alarms)
+16. [Observability — Logging](#16-observability--logging)
+17. [Observability — X-Ray](#17-observability--x-ray)
+18. [Debugging & Troubleshooting](#18-debugging--troubleshooting)
+19. [Cost Model](#19-cost-model)
+20. [Limits & Quotas](#20-limits--quotas)
+21. [Best Practices & Patterns](#21-best-practices--patterns)
+22. [Terraform Full Resource Reference](#22-terraform-full-resource-reference)
 
 ---
 
-## 1. Service Overview
+## 1. Core Concepts
 
-AWS EventBridge is a **serverless event bus** service that makes it easy to connect applications using events. It was originally Amazon CloudWatch Events (the `aws_cloudwatch_event_*` Terraform resources retain this naming for backwards compatibility).
+### What EventBridge Is
+- **Serverless event bus** — routes events between AWS services, SaaS apps, and custom applications.
+- Near-real-time event delivery (typically <1 second; SLA <500ms for most targets).
+- Fully managed, scales automatically, no infrastructure to manage.
+- Decouples producers from consumers — producers don't know about consumers.
+- Events are JSON objects up to **256 KB**.
+- At-least-once delivery with retry logic.
 
-| Feature | Detail |
+### EventBridge Components
+
+| Component | Description |
 |---|---|
-| Delivery model | At-least-once, near real-time (usually < 500 ms) |
-| Durability | Events in flight are persisted; targets are retried on failure |
-| Throughput | Default bus: 10,000 events/s per region. Custom buses: configurable soft limit |
-| Pricing | $1.00 per million custom events; schema discovery, Pipes, and Scheduler priced separately |
-| Global service | Available in all commercial AWS regions; events do not cross regions automatically |
+| **Event Bus** | Named channel that receives events. Events are matched against rules. |
+| **Rule** | Pattern matcher + target router. Matches events and routes to 1-5 targets. |
+| **Event** | JSON payload. Always has a standard envelope with detail fields. |
+| **Target** | Destination for matched events (Lambda, SQS, SNS, Step Functions, etc.). |
+| **Schema Registry** | Stores and discovers event schemas. Enables code binding generation. |
+| **Archive** | Stores all or filtered events for replay. |
+| **Pipes** | Point-to-point event integration with optional filtering + enrichment. |
+| **Scheduler** | Create one-time or recurring scheduled tasks (replaces CloudWatch Events cron). |
+| **API Destination** | Send events to any HTTP endpoint (SaaS, webhooks). |
+| **Connection** | Auth config (API key, OAuth, Basic) for API Destinations. |
 
-**Key differentiators from SNS/SQS:**
+### Three Bus Types
 
-- Content-based filtering via JSON patterns (not attribute-based like SNS)
-- Native integration with 200+ AWS services as both event sources and targets
-- Event Replay via Archives
-- Schema Registry with code binding generation
-- EventBridge Pipes for point-to-point enrichment pipelines
-- EventBridge Scheduler for one-off and recurring schedules at scale
+| Bus | Description | Use Case |
+|---|---|---|
+| **Default** | `default` — receives all AWS service events | AWS service integrations |
+| **Custom** | User-created named buses | Application domain events |
+| **Partner** | SaaS partner events (Zendesk, Datadog, etc.) | SaaS integrations |
 
----
-
-## 2. Core Concepts & Architecture
-
+### Event Flow
 ```
-Event Producer
-     │
-     ▼
- Event Bus  ──── Rule (Pattern Match / Schedule) ───▶ Target(s)
-     │                                                     │
-     │                                                     ├── Lambda
-     │                                                     ├── SQS
-     │                                                     ├── SNS
-     │                                                     ├── Step Functions
-     │                                                     ├── API Gateway
-     │                                                     ├── Another Event Bus
-     │                                                     └── 200+ more
-     │
-     └──── Archive ──▶ Replay
+Producer (AWS Service / App / SaaS Partner)
+  └─→ Event Bus
+        └─→ Rule (pattern matching)
+              ├─→ Target 1 (Lambda)
+              ├─→ Target 2 (SQS)
+              └─→ Target 3 (Step Functions)
 ```
 
-**Flow:**
-1. Producer sends an event to an Event Bus (`PutEvents` API).
-2. EventBridge evaluates the event against all rules on that bus.
-3. Each matching rule invokes its configured targets.
-4. If target invocation fails, the retry policy governs retries; undeliverable events go to DLQ.
+### EventBridge vs SNS vs SQS
+
+| Feature | EventBridge | SNS | SQS |
+|---|---|---|---|
+| Pattern matching | ✅ Rich JSON patterns | ❌ Simple attribute filters | ❌ |
+| Max targets per event | 5 per rule (unlimited rules) | Unlimited subscribers | 1 consumer at a time |
+| Schema registry | ✅ | ❌ | ❌ |
+| Archive & replay | ✅ | ❌ | ❌ |
+| Cross-account | ✅ Native | ✅ | Limited |
+| SaaS integrations | ✅ Native | ❌ | ❌ |
+| Ordering | ❌ | ❌ | ✅ FIFO |
+| Deduplication | ❌ | ❌ | ✅ FIFO |
+| Batch processing | ❌ | ❌ | ✅ |
+| Delivery guarantee | At-least-once | At-least-once | At-least-once |
+| Max event/message size | 256 KB | 256 KB | 256 KB |
 
 ---
 
-## 3. Event Buses
+## 2. Event Buses
 
-### Types
+### Default Event Bus
+- Automatically exists in every region.
+- Receives events from all AWS services in the account.
+- Cannot be deleted.
+- Name: `default`
 
-| Type | Description |
-|---|---|
-| **Default** | One per account per region. Receives events from AWS services. Named `default`. Cannot be deleted. |
-| **Custom** | User-created buses for application events. Up to 100 per region (soft limit). |
-| **Partner** | Created by SaaS partners (Zendesk, Datadog, etc.) via EventBridge Partner Event Sources. |
-
-### Key Properties
-
-| Property | Notes |
-|---|---|
-| `name` | 1–256 chars. Letters, numbers, `.`, `-`, `_`, `/`. No colons. |
-| `arn` | `arn:aws:events:<region>:<account>:event-bus/<name>` |
-| `policy` | Resource-based policy for cross-account access (see §13) |
-| `kms_key_identifier` | KMS key for server-side encryption at rest |
-| `tags` | Standard AWS tags |
-
-### Terraform — `aws_cloudwatch_event_bus`
-
+### Custom Event Bus
 ```hcl
 resource "aws_cloudwatch_event_bus" "this" {
-  name              = "my-app-events"
-  kms_key_identifier = aws_kms_key.eb.arn   # optional; enables SSE
-  tags              = { Environment = "prod" }
+  name = "${var.app_name}-${var.environment}"
+  # name cannot be "default" — reserved
+  # name cannot start with "aws." — reserved for AWS
+
+  tags = var.tags
+}
+
+output "event_bus_arn" {
+  value = aws_cloudwatch_event_bus.this.arn
 }
 ```
 
-**Key outputs:** `arn`, `name`
+### Event Bus Resource Policy (cross-account publishing)
+```hcl
+resource "aws_cloudwatch_event_bus_policy" "this" {
+  event_bus_name = aws_cloudwatch_event_bus.this.name
 
-**Important:** Do NOT create a resource for the `default` bus — it exists automatically. Attach rules to it by setting `event_bus_name = "default"` (or omitting it) on the rule.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Allow specific account to publish
+        Sid    = "AllowAccountPublish"
+        Effect = "Allow"
+        Principal = { AWS = "arn:aws:iam::${var.producer_account_id}:root" }
+        Action   = "events:PutEvents"
+        Resource = aws_cloudwatch_event_bus.this.arn
+      },
+      {
+        # Allow entire AWS organization to publish
+        Sid    = "AllowOrgPublish"
+        Effect = "Allow"
+        Principal = { AWS = "*" }
+        Action   = "events:PutEvents"
+        Resource = aws_cloudwatch_event_bus.this.arn
+        Condition = {
+          StringEquals = {
+            "aws:PrincipalOrgID" = var.organization_id
+          }
+        }
+      }
+    ]
+  })
+}
+```
+
+### Partner Event Bus (SaaS)
+```hcl
+# Partner event buses are created by accepting a partner invite
+# Terraform resource for reading partner event source:
+data "aws_cloudwatch_event_source" "zendesk" {
+  name_prefix = "aws.partner/zendesk.com"
+}
+
+resource "aws_cloudwatch_event_bus" "partner" {
+  name              = data.aws_cloudwatch_event_source.zendesk.name
+  event_source_name = data.aws_cloudwatch_event_source.zendesk.name
+}
+```
 
 ---
 
-## 4. Events — Structure & Schema
+## 3. Event Structure
 
 ### Standard Event Envelope
-
-Every event published to EventBridge has this top-level structure:
-
+Every EventBridge event has this structure:
 ```json
 {
   "version": "0",
   "id": "12345678-1234-1234-1234-123456789012",
   "source": "com.myapp.orders",
   "account": "123456789012",
-  "time": "2026-02-20T10:00:00Z",
+  "time": "2024-06-01T12:00:00Z",
   "region": "us-east-1",
-  "resources": ["arn:aws:..."],
+  "resources": [
+    "arn:aws:dynamodb:us-east-1:123456789012:table/orders"
+  ],
   "detail-type": "OrderPlaced",
   "detail": {
-    "orderId": "ORD-001",
-    "amount": 42.50,
-    "currency": "USD"
+    "orderId": "ORD-789",
+    "userId": "USER-123",
+    "total": 99.99,
+    "items": [
+      {"productId": "PROD-456", "quantity": 2}
+    ],
+    "status": "PLACED"
   }
 }
 ```
 
-| Field | Max Size | Notes |
+### Key Fields
+
+| Field | Max Size | Description |
 |---|---|---|
-| `source` | — | Reverse-domain convention (`com.myapp.orders`). AWS services use `aws.*` |
-| `detail-type` | — | Human-readable event type. Free-form string. |
-| `detail` | 256 KB total event size | Arbitrary JSON. Can reference nested paths in patterns and input transformers. |
-| `resources` | Array of strings | ARNs of resources involved in the event. |
-| `time` | ISO 8601 | Defaults to `PutEvents` call time if omitted. |
+| `version` | — | Always `"0"` |
+| `id` | — | UUID; auto-generated by EventBridge |
+| `source` | 256 chars | Event source identifier. Custom: use reverse domain like `com.myapp.service` |
+| `detail-type` | 128 chars | Human-readable event type. Use `PascalCase` convention |
+| `detail` | ~256 KB total | Event payload (arbitrary JSON) |
+| `time` | — | ISO 8601. Auto-set to `PutEvents` time if omitted |
+| `resources` | — | List of ARNs of resources related to the event |
+| `account` | — | Auto-populated from caller identity |
+| `region` | — | Auto-populated from endpoint |
 
-**Total event size limit: 256 KB.** EventBridge rejects larger events at the `PutEvents` API.
+### Publishing Custom Events (Python)
+```python
+import boto3
+import json
+from datetime import datetime, timezone
 
-### Sending Events — `PutEvents` API
+client = boto3.client("events")
 
-```bash
-aws events put-events --entries '[{
-  "Source": "com.myapp.orders",
-  "DetailType": "OrderPlaced",
-  "Detail": "{\"orderId\":\"ORD-001\"}",
-  "EventBusName": "my-app-events"
-}]'
+def publish_event(event_bus_name, source, detail_type, detail):
+    response = client.put_events(
+        Entries=[
+            {
+                "EventBusName": event_bus_name,
+                "Source": source,
+                "DetailType": detail_type,
+                "Detail": json.dumps(detail),
+                "Time": datetime.now(timezone.utc),
+                "Resources": [],  # optional ARNs
+            }
+        ]
+    )
+
+    failed = response.get("FailedEntryCount", 0)
+    if failed > 0:
+        for entry in response["Entries"]:
+            if "ErrorCode" in entry:
+                raise Exception(f"Failed: {entry['ErrorCode']}: {entry['ErrorMessage']}")
+
+    return response["Entries"][0]["EventId"]
+
+# Batch (up to 10 events per PutEvents call)
+def publish_events_batch(event_bus_name, events):
+    entries = [
+        {
+            "EventBusName": event_bus_name,
+            "Source": e["source"],
+            "DetailType": e["detail_type"],
+            "Detail": json.dumps(e["detail"]),
+        }
+        for e in events
+    ]
+
+    # Process in batches of 10
+    for i in range(0, len(entries), 10):
+        batch = entries[i:i+10]
+        response = client.put_events(Entries=batch)
+        # Handle FailedEntryCount...
 ```
 
-**Batch size:** Up to 10 entries per `PutEvents` call.
-**Partial failures:** The API returns per-entry `FailedEntryCount`. Always check the response — HTTP 200 does not mean all events were accepted.
+### Naming Conventions
+- `source`: reverse domain notation — `com.mycompany.orders`, `com.mycompany.users`
+- `detail-type`: PascalCase noun phrase — `OrderPlaced`, `UserCreated`, `PaymentFailed`
+- AWS services use: `source = "aws.s3"`, `detail-type = "Object Created"`
 
 ---
 
-## 5. Event Pattern Matching
+## 4. Rules & Event Patterns
 
-Patterns are JSON objects that describe which event fields must match. An event matches only if **all** specified fields match.
+### Rule Basics
+- Rules live on an event bus and are evaluated against every event.
+- A rule matches or doesn't match — no partial matches.
+- Multiple rules can match the same event (fanout).
+- Up to 5 targets per rule.
+- Max 300 rules per event bus (soft limit, adjustable).
 
-### Matching Types
+### Event Pattern Matching Logic
+- **All listed fields must match** (implicit AND).
+- **Array values are OR** — any value in the array matches.
+- Missing fields in the pattern = match anything (wildcard).
+- Matching is **case-sensitive**.
 
-| Type | Syntax | Example |
-|---|---|---|
-| **Exact match** | `"value"` | `"source": ["com.myapp"]` |
-| **Prefix match** | `{"prefix": "str"}` | `"source": [{"prefix": "com.myapp"}]` |
-| **Suffix match** | `{"suffix": "str"}` | `"detail-type": [{"suffix": "Created"}]` |
-| **Anything-but** | `{"anything-but": [...]}` | `"status": [{"anything-but": ["DELETED"]}]` |
-| **Numeric range** | `{"numeric": ["op", n, ...]}` | `"detail.amount": [{"numeric": [">", 0, "<=", 100]}]` |
-| **Null** | `{"exists": false}` | Match if field is absent / null |
-| **Exists** | `{"exists": true}` | Match if field is present (any value) |
-| **Wildcard** | `{"wildcard": "str*"}` | `"source": [{"wildcard": "com.myapp.*"}]` |
-| **IP CIDR** | `{"cidr": "x.x.x.x/y"}` | Match IP addresses in CIDR range |
-| **OR (same field)** | Multiple array elements | `"source": ["a", "b"]` = a OR b |
-| **AND (different fields)** | Multiple keys | `"source": [...], "detail-type": [...]` = AND |
+```hcl
+resource "aws_cloudwatch_event_rule" "this" {
+  name           = "${var.app_name}-order-placed"
+  description    = "Matches OrderPlaced events"
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  state          = "ENABLED"  # "ENABLED" or "DISABLED"
 
-### Example — Complex Pattern
+  event_pattern = jsonencode({
+    source      = ["com.myapp.orders"]
+    detail-type = ["OrderPlaced"]
+    detail = {
+      status = ["PLACED", "CONFIRMED"]
+      total  = [{ numeric = [">", 100] }]
+    }
+  })
 
+  tags = var.tags
+}
+```
+
+### Pattern Matching Rules
+
+#### Exact Match
+```json
+{ "source": ["com.myapp.orders"] }
+```
+
+#### Prefix Match
+```json
+{ "source": [{ "prefix": "com.myapp" }] }
+```
+
+#### Suffix Match
+```json
+{ "detail": { "filename": [{ "suffix": ".csv" }] } }
+```
+
+#### Anything-but (exclusion)
+```json
+{ "detail": { "status": [{ "anything-but": ["CANCELLED", "FAILED"] }] } }
+```
+
+#### Numeric Matching
+```json
+{ "detail": { "total": [{ "numeric": [">", 0, "<=", 1000] }] } }
+{ "detail": { "age":   [{ "numeric": ["=", 18] }] } }
+{ "detail": { "score": [{ "numeric": [">=", 50, "<", 100] }] } }
+```
+
+#### Exists / Does Not Exist
+```json
+{ "detail": { "errorCode": [{ "exists": true }] } }
+{ "detail": { "optional_field": [{ "exists": false }] } }
+```
+
+#### IP Address CIDR Match
+```json
+{ "detail": { "sourceIp": [{ "cidr": "10.0.0.0/8" }] } }
+```
+
+#### Wildcard String Match
+```json
+{ "detail": { "eventName": [{ "wildcard": "s3:Object*" }] } }
+```
+
+#### Equals-ignore-case
+```json
+{ "detail": { "status": [{ "equals-ignore-case": "active" }] } }
+```
+
+#### Combined (AND within object, OR within array)
 ```json
 {
   "source": ["com.myapp.orders"],
   "detail-type": ["OrderPlaced", "OrderUpdated"],
   "detail": {
-    "amount": [{"numeric": [">", 100]}],
-    "currency": ["USD", "EUR"],
-    "status": [{"anything-but": ["CANCELLED"]}]
+    "status": [{ "anything-but": "CANCELLED" }],
+    "total": [{ "numeric": [">", 0] }],
+    "region": [{ "prefix": "us-" }]
   }
 }
 ```
 
-### Important Behaviours
+### AWS Service Event Patterns (default bus)
 
-- Patterns match against the **entire event envelope** including `source`, `account`, `region`, `detail-type`, `resources`, and `detail`.
-- Array notation means the actual value must equal **at least one** of the listed values.
-- Nested paths in `detail` are expressed as nested JSON objects, not dot notation in patterns.
-- Pattern matching is case-**sensitive** for strings.
-- A rule with no `event_pattern` and no `schedule_expression` is invalid.
-
-### Terraform — Pattern as String
-
-```hcl
-resource "aws_cloudwatch_event_rule" "this" {
-  event_pattern = jsonencode({
-    source      = ["com.myapp.orders"]
-    detail-type = ["OrderPlaced"]
-    detail = {
-      amount = [{ numeric = [">", 100] }]
-    }
-  })
+#### S3 Event
+```json
+{
+  "source": ["aws.s3"],
+  "detail-type": ["Object Created"],
+  "detail": {
+    "bucket": { "name": ["my-bucket"] },
+    "object": { "key": [{ "prefix": "uploads/" }] }
+  }
 }
 ```
 
-**Use `jsonencode()`** to keep patterns as HCL objects — avoids escaping issues and keeps formatting consistent.
-
----
-
-## 6. Rules
-
-Rules evaluate incoming events and route matching ones to targets. A rule is attached to exactly one bus.
-
-### Properties
-
-| Property | Notes |
-|---|---|
-| `name` | 1–64 chars. Letters, numbers, `.`, `-`, `_`. Unique per bus. |
-| `event_bus_name` | Bus name or ARN. Omit or set to `"default"` for the default bus. |
-| `event_pattern` | Mutually exclusive with `schedule_expression`. |
-| `schedule_expression` | Mutually exclusive with `event_pattern`. Only valid on the `default` bus. |
-| `state` | `ENABLED` or `DISABLED`. |
-| `description` | Optional free-text. |
-
-### Terraform — `aws_cloudwatch_event_rule`
-
-```hcl
-resource "aws_cloudwatch_event_rule" "order_placed" {
-  name           = "order-placed"
-  event_bus_name = aws_cloudwatch_event_bus.app.name
-  description    = "Fires when an order is placed"
-
-  event_pattern = jsonencode({
-    source      = ["com.myapp.orders"]
-    detail-type = ["OrderPlaced"]
-  })
-
-  state = "ENABLED"
-  tags  = { Environment = "prod" }
+#### EC2 State Change
+```json
+{
+  "source": ["aws.ec2"],
+  "detail-type": ["EC2 Instance State-change Notification"],
+  "detail": {
+    "state": ["stopped", "terminated"]
+  }
 }
 ```
 
-**Key outputs:** `arn`, `name`
+#### CodePipeline State Change
+```json
+{
+  "source": ["aws.codepipeline"],
+  "detail-type": ["CodePipeline Pipeline Execution State Change"],
+  "detail": {
+    "state": ["FAILED"],
+    "pipeline": ["my-pipeline"]
+  }
+}
+```
 
-The `arn` is required as `source_arn` in `aws_lambda_permission` to restrict which rule can invoke the Lambda.
+#### ECS Task State Change
+```json
+{
+  "source": ["aws.ecs"],
+  "detail-type": ["ECS Task State Change"],
+  "detail": {
+    "lastStatus": ["STOPPED"],
+    "stoppedReason": [{ "prefix": "Essential container" }]
+  }
+}
+```
+
+#### RDS Event
+```json
+{
+  "source": ["aws.rds"],
+  "detail-type": ["RDS DB Instance Event"],
+  "detail": {
+    "EventCategories": ["failure", "failover"]
+  }
+}
+```
+
+#### Health Dashboard (AWS Health)
+```json
+{
+  "source": ["aws.health"],
+  "detail-type": ["AWS Health Event"],
+  "detail": {
+    "service": ["EC2"],
+    "eventTypeCategory": ["issue"]
+  }
+}
+```
+
+#### GuardDuty Finding
+```json
+{
+  "source": ["aws.guardduty"],
+  "detail-type": ["GuardDuty Finding"],
+  "detail": {
+    "severity": [{ "numeric": [">=", 7] }],
+    "type": [{ "prefix": "UnauthorizedAccess" }]
+  }
+}
+```
 
 ---
 
-## 7. Schedule Expressions
+## 5. Targets
 
-Schedule rules fire at a specific time or interval. They are **only valid on the default bus**.
+### Target Overview
 
-### Rate Expressions
-
-```
-rate(value unit)
-```
-
-| Unit values | `minute`, `minutes`, `hour`, `hours`, `day`, `days` |
-|---|---|
-| Minimum | `rate(1 minute)` |
-| Examples | `rate(5 minutes)`, `rate(1 hour)`, `rate(7 days)` |
-
-### Cron Expressions
-
-```
-cron(minutes hours day-of-month month day-of-week year)
-```
-
-| Field | Values | Wildcards |
+| Target | Type | Notes |
 |---|---|---|
-| Minutes | 0–59 | `,`, `-`, `*`, `/` |
-| Hours | 0–23 | `,`, `-`, `*`, `/` |
-| Day-of-month | 1–31 | `,`, `-`, `*`, `?`, `/`, `L`, `W` |
-| Month | 1–12 or JAN–DEC | `,`, `-`, `*`, `/` |
-| Day-of-week | 1–7 or SUN–SAT | `,`, `-`, `*`, `?`, `/`, `L`, `#` |
-| Year | 1970–2199 | `,`, `-`, `*`, `/` |
+| **Lambda** | Function | Most common. Async invocation. |
+| **SQS** | Queue / FIFO Queue | FIFO requires `MessageGroupId` |
+| **SNS** | Topic | Fan-out |
+| **Step Functions** | State Machine | Start execution |
+| **Kinesis Data Streams** | Stream | Requires `PartitionKey` |
+| **Kinesis Firehose** | Delivery Stream | Direct to S3/Redshift/etc. |
+| **DynamoDB** | (via API Destination or Lambda) | No native direct target |
+| **EventBridge Bus** | Another event bus | Cross-account/region routing |
+| **API Gateway** | REST API stage | HTTP endpoint |
+| **API Destination** | HTTP endpoint | External SaaS/webhooks |
+| **CloudWatch Log Group** | Log Group | Event storage/debugging |
+| **ECS Task** | ECS Cluster | Run task on schedule/event |
+| **CodeBuild** | Project | Start build |
+| **CodePipeline** | Pipeline | Start pipeline |
+| **Batch** | Job Queue | Submit job |
+| **SSM Run Command** | EC2 instances | Run commands |
+| **SSM Automation** | Runbook | Automation workflow |
+| **SageMaker Pipeline** | ML pipeline | Start run |
+| **Redshift** | Data API | SQL statement |
+| **Inspector** | Assessment | Start assessment |
 
-**Note:** Day-of-month and Day-of-week cannot both be specified — one must be `?`.
-
-```
-cron(0 2 * * ? *)          # Every day at 02:00 UTC
-cron(0 8 ? * MON-FRI *)    # Weekdays at 08:00 UTC
-cron(0 0 1 * ? *)          # First day of every month at midnight UTC
-cron(0/15 * * * ? *)       # Every 15 minutes
-```
-
-**All cron times are UTC.** There is no timezone support in EventBridge rules — use EventBridge Scheduler (§15) for timezone-aware schedules.
-
-### Terraform
-
-```hcl
-resource "aws_cloudwatch_event_rule" "daily" {
-  name                = "daily-cleanup"
-  schedule_expression = "cron(0 2 * * ? *)"
-  # event_bus_name omitted → attaches to default bus
-}
-```
-
----
-
-## 8. Targets
-
-Each rule can have up to **5 targets** (soft limit; can be raised to 100). When a rule matches, EventBridge invokes all targets concurrently.
-
-### Target Configuration
-
-| Field | Notes |
-|---|---|
-| `arn` | ARN of the destination service. |
-| `id` | 1–64 chars. Unique per rule. Identifies the target within the rule. |
-| `role_arn` | IAM role EventBridge assumes to call the target. Required for most non-Lambda targets. |
-| `input` | Static JSON string to send instead of the original event. |
-| `input_path` | JSONPath expression to extract a portion of the event as input. |
-| `input_transformer` | Extract fields via JSONPath and build a custom input payload. |
-| `dead_letter_config.arn` | SQS queue ARN for undeliverable events. |
-| `retry_policy` | Max retries and event age before giving up (see §11). |
-
-### Supported Target Services (common)
-
-| Service | Requires `role_arn` | Notes |
-|---|---|---|
-| AWS Lambda | No (uses resource-based policy) | Most common target. `aws_lambda_permission` required. |
-| Amazon SQS | Yes (for encrypted queues) | Standard and FIFO queues supported. |
-| Amazon SNS | No (uses resource policy) | Topic access controlled by SNS policy. |
-| AWS Step Functions | Yes | State machine ARN. Starts new execution. |
-| Amazon Kinesis Data Streams | Yes | Puts records into the stream. |
-| Amazon Kinesis Firehose | Yes | Delivers to S3/Redshift/etc. |
-| API Gateway (REST/HTTP) | Yes | Calls a specific endpoint. |
-| Amazon ECS Task | Yes | Runs a task in a cluster. |
-| AWS Batch Job | Yes | Submits a batch job. |
-| Amazon SageMaker Pipeline | Yes | Starts pipeline execution. |
-| CloudWatch Log Group | No | Delivers event JSON to a log group. |
-| Another Event Bus | Yes (cross-account) | Forwards to same-account or cross-account bus. |
-| AWS SSM | Yes | Run Automation documents or Send Commands. |
-
-### Terraform — `aws_cloudwatch_event_target`
-
+### Lambda Target
 ```hcl
 resource "aws_cloudwatch_event_target" "lambda" {
-  rule           = aws_cloudwatch_event_rule.order_placed.name
-  event_bus_name = aws_cloudwatch_event_bus.app.name
-  target_id      = "process-order"
+  rule           = aws_cloudwatch_event_rule.this.name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "lambda-target"
   arn            = aws_lambda_function.processor.arn
-  role_arn       = null  # Lambda uses resource-based policy, not role_arn
+
+  # Optional: retry policy
+  retry_policy {
+    maximum_event_age_in_seconds = 3600   # max 86400 (24 hrs)
+    maximum_retry_attempts       = 3      # max 185
+  }
+
+  # Optional: DLQ
+  dead_letter_config {
+    arn = aws_sqs_queue.dlq.arn
+  }
+}
+
+resource "aws_lambda_permission" "eventbridge" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.processor.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.this.arn
+}
+```
+
+### SQS Target
+```hcl
+resource "aws_cloudwatch_event_target" "sqs" {
+  rule           = aws_cloudwatch_event_rule.this.name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "sqs-target"
+  arn            = aws_sqs_queue.this.arn
+
+  # SQS FIFO requires message group ID
+  sqs_target {
+    message_group_id = "order-events"  # only for FIFO queues
+  }
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 3
+  }
 
   dead_letter_config {
     arn = aws_sqs_queue.dlq.arn
   }
-
-  retry_policy {
-    maximum_event_age_in_seconds = 3600   # 1 hour
-    maximum_retry_attempts       = 10
-  }
-}
-```
-
-### Lambda Permissions
-
-EventBridge invokes Lambda using a **resource-based policy**, not an IAM role. You must grant `lambda:InvokeFunction` permission with `Principal = "events.amazonaws.com"` and `SourceArn` scoped to the rule ARN.
-
-```hcl
-resource "aws_lambda_permission" "eventbridge" {
-  statement_id  = "AllowExecutionFromEventBridge"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.processor.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.order_placed.arn
-  # qualifier   = "prod"  # optional: restrict to alias or version
-}
-```
-
-**Scoping `source_arn` to the rule ARN (not bus ARN) is a security best practice** — it ensures only that specific rule can invoke the function.
-
----
-
-## 9. Input Transformation
-
-Input transformation lets you reshape the event before delivering it to a target. Three mutually exclusive options:
-
-### Option 1 — `input` (static payload)
-
-Replaces the entire event with a static JSON string:
-
-```hcl
-input = jsonencode({ message = "Event received" })
-```
-
-### Option 2 — `input_path` (JSONPath extraction)
-
-Extracts a single field from the event using JSONPath:
-
-```hcl
-input_path = "$.detail"          # sends only the detail object
-input_path = "$.detail.orderId"  # sends the scalar value
-```
-
-### Option 3 — `input_transformer` (template-based reshaping)
-
-Extracts multiple fields and renders them into a custom template:
-
-```hcl
-input_transformer {
-  input_paths_map = {
-    orderId   = "$.detail.orderId"
-    email     = "$.detail.customerEmail"
-    timestamp = "$.time"
-  }
-  input_template = <<-JSON
-    {
-      "order": "<orderId>",
-      "notify": "<email>",
-      "at": "<timestamp>"
-    }
-  JSON
-}
-```
-
-**Rules:**
-- `input_paths_map` keys are referenced in `input_template` as `<key>`.
-- If the template is a quoted string (not an object), values are injected as plain strings.
-- Extracted values are JSON-typed — strings are quoted, numbers are not.
-- Maximum 100 variables in `input_paths_map`.
-- Maximum 8,192 characters in `input_template`.
-
-### JSONPath Syntax
-
-| Expression | Meaning |
-|---|---|
-| `$.source` | Top-level field |
-| `$.detail.orderId` | Nested field |
-| `$.detail.items[0]` | First array element |
-| `$.detail.items[0].sku` | Nested in array element |
-| `$.resources[0]` | First resource ARN |
-
----
-
-## 10. Dead-Letter Queues (DLQ)
-
-When EventBridge exhausts retries (or `maximum_event_age_in_seconds` expires), the event is sent to the DLQ if configured.
-
-### DLQ Message Structure
-
-The SQS message body is the **original event JSON**. EventBridge adds these message attributes:
-
-| Attribute | Type | Description |
-|---|---|---|
-| `ERROR_CODE` | String | `NO_PERMISSION`, `RESOURCE_NOT_FOUND`, `THROTTLE`, etc. |
-| `ERROR_MESSAGE` | String | Human-readable error description |
-| `RULE_ARN` | String | ARN of the rule that triggered the delivery |
-| `TARGET_ARN` | String | ARN of the failed target |
-| `TARGET_ID` | String | Target ID within the rule |
-| `APPROXIMATE_FIRST_RECEIVE_TIMESTAMP` | Number | Unix epoch milliseconds |
-
-### Requirements
-
-- DLQ must be an **SQS standard queue** (not FIFO).
-- EventBridge must have `sqs:SendMessage` permission on the queue.
-- If the queue is encrypted with a customer-managed KMS key, EventBridge must have `kms:GenerateDataKey` and `kms:Decrypt` on that key.
-- DLQ is configured **per target**, not per rule.
-
-### SQS Queue Policy for EventBridge DLQ
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Sid": "AllowEventBridgeSendMessage",
-    "Effect": "Allow",
-    "Principal": { "Service": "events.amazonaws.com" },
-    "Action": "sqs:SendMessage",
-    "Resource": "arn:aws:sqs:<region>:<account>:<queue-name>",
-    "Condition": {
-      "ArnEquals": {
-        "aws:SourceArn": "arn:aws:events:<region>:<account>:rule/<bus-name>/<rule-name>"
-      }
-    }
-  }]
-}
-```
-
-### Critical Metric — `InvocationsFailedToBeSentToDLQ`
-
-If EventBridge **cannot reach the DLQ itself** (permissions issue, queue deleted, etc.), the event is **silently dropped** — it never appears in the DLQ and there is no automatic notification. This is one of the most dangerous silent failure modes. **Always alarm on this metric.**
-
-### Terraform
-
-```hcl
-resource "aws_sqs_queue" "dlq" {
-  name = "my-rule-dlq"
 }
 
-resource "aws_sqs_queue_policy" "dlq" {
-  queue_url = aws_sqs_queue.dlq.id
+# SQS resource-based policy to allow EventBridge
+resource "aws_sqs_queue_policy" "eventbridge" {
+  queue_url = aws_sqs_queue.this.id
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid       = "AllowEventBridge"
+      Sid    = "AllowEventBridgeSend"
+      Effect = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+      Action   = "sqs:SendMessage"
+      Resource = aws_sqs_queue.this.arn
+      Condition = {
+        ArnEquals = { "aws:SourceArn" = aws_cloudwatch_event_rule.this.arn }
+      }
+    }]
+  })
+}
+```
+
+### SNS Target
+```hcl
+resource "aws_cloudwatch_event_target" "sns" {
+  rule           = aws_cloudwatch_event_rule.this.name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "sns-target"
+  arn            = aws_sns_topic.this.arn
+}
+
+resource "aws_sns_topic_policy" "eventbridge" {
+  arn = aws_sns_topic.this.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "AllowEventBridgePublish"
+      Effect = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+      Action   = "SNS:Publish"
+      Resource = aws_sns_topic.this.arn
+      Condition = {
+        ArnEquals = { "aws:SourceArn" = aws_cloudwatch_event_rule.this.arn }
+      }
+    }]
+  })
+}
+```
+
+### Step Functions Target
+```hcl
+resource "aws_iam_role" "eventbridge_sfn" {
+  name = "${var.app_name}-eventbridge-sfn-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
       Effect    = "Allow"
       Principal = { Service = "events.amazonaws.com" }
-      Action    = "sqs:SendMessage"
-      Resource  = aws_sqs_queue.dlq.arn
+      Action    = "sts:AssumeRole"
     }]
   })
 }
-```
 
----
-
-## 11. Retry Policy
-
-Controls how EventBridge retries failed target invocations.
-
-| Parameter | Default | Range | Notes |
-|---|---|---|---|
-| `maximum_retry_attempts` | 185 | 0–185 | 0 = no retries; event goes to DLQ immediately on first failure. |
-| `maximum_event_age_in_seconds` | 86400 (24 h) | 60–86400 | EventBridge stops retrying after this window even if retry count is not exhausted. |
-
-### Retry Behaviour
-
-- EventBridge uses **exponential backoff with jitter** between retries.
-- The retry clock starts at the event's `time` field, not the delivery attempt time.
-- A target invocation counts as failed if the service returns an error (e.g., Lambda throws an unhandled exception, SQS returns throttle error, etc.).
-- Lambda throttles (`TooManyRequestsException`) are retried separately with up to 24 hours of built-in retry by EventBridge before counting against the configured limits.
-
-### Terraform
-
-```hcl
-retry_policy {
-  maximum_event_age_in_seconds = 3600   # abandon after 1 hour
-  maximum_retry_attempts       = 3      # max 3 delivery attempts
-}
-```
-
----
-
-## 12. Event Archives & Replay
-
-### Archives
-
-Archives record events from a bus (or a filtered subset) to an EventBridge-managed store.
-
-| Property | Notes |
-|---|---|
-| `event_source_arn` | The bus ARN whose events to archive. |
-| `event_pattern` | Optional filter — archive only matching events. Null = archive everything. |
-| `retention_days` | 0 = indefinite. > 0 = days before automatic expiry. |
-| Storage | Managed by AWS; priced per GB per month. |
-
-```hcl
-resource "aws_cloudwatch_event_archive" "this" {
-  name             = "order-events-archive"
-  event_source_arn = aws_cloudwatch_event_bus.app.arn
-  retention_days   = 90
-
-  event_pattern = jsonencode({
-    source = ["com.myapp.orders"]
-  })
-}
-```
-
-**Key outputs:** `arn`, `name`
-
-### Replay
-
-Replay re-processes archived events through the bus's current rules and targets. Useful for:
-- Recovering from target failures (re-deliver missed events)
-- Backfilling after deploying new rules/targets
-- Testing new consumers against historical data
-
-**Replay is initiated via the AWS Console or API/CLI — it is not managed by a Terraform resource as of the current provider.**
-
-```bash
-aws events start-replay \
-  --replay-name "backfill-2026-02-01" \
-  --event-source-arn "arn:aws:events:us-east-1:123456789012:archive/order-events-archive" \
-  --event-start-time "2026-02-01T00:00:00Z" \
-  --event-end-time   "2026-02-10T00:00:00Z" \
-  --destination '{
-    "Arn": "arn:aws:events:us-east-1:123456789012:event-bus/my-app-events"
-  }'
-```
-
-**Replay considerations:**
-- Replayed events have a `replay-name` field in the envelope so consumers can detect and skip them if needed.
-- Targets must be idempotent to safely handle replays.
-- Replay throughput is throttled; large replays may take significant time.
-
----
-
-## 13. Cross-Account & Cross-Region Routing
-
-### Cross-Account (same region)
-
-1. Attach a **resource-based policy** to the target bus in Account B granting Account A `events:PutEvents`.
-2. Create a rule in Account A targeting the bus ARN in Account B using an IAM role.
-
-**Target bus policy (Account B):**
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Sid": "AllowAccountAEvents",
-    "Effect": "Allow",
-    "Principal": { "AWS": "arn:aws:iam::ACCOUNT_A_ID:root" },
-    "Action": "events:PutEvents",
-    "Resource": "arn:aws:events:us-east-1:ACCOUNT_B_ID:event-bus/central-bus"
-  }]
-}
-```
-
-**Terraform — `aws_cloudwatch_event_bus_policy`:**
-
-```hcl
-resource "aws_cloudwatch_event_bus_policy" "cross_account" {
-  event_bus_name = aws_cloudwatch_event_bus.central.name
+resource "aws_iam_role_policy" "eventbridge_sfn" {
+  role = aws_iam_role.eventbridge_sfn.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid       = "AllowAccount"
-      Effect    = "Allow"
-      Principal = { AWS = "arn:aws:iam::111122223333:root" }
-      Action    = "events:PutEvents"
-      Resource  = aws_cloudwatch_event_bus.central.arn
+      Effect   = "Allow"
+      Action   = "states:StartExecution"
+      Resource = aws_sfn_state_machine.this.arn
     }]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "sfn" {
+  rule           = aws_cloudwatch_event_rule.this.name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "sfn-target"
+  arn            = aws_sfn_state_machine.this.arn
+  role_arn       = aws_iam_role.eventbridge_sfn.arn
+
+  # Input transformation to map event fields to SFN input
+  input_transformer {
+    input_paths = {
+      orderId = "$.detail.orderId"
+      userId  = "$.detail.userId"
+    }
+    input_template = jsonencode({
+      orderId = "<orderId>"
+      userId  = "<userId>"
+      source  = "eventbridge"
+    })
+  }
+}
+```
+
+### EventBridge Bus Target (cross-bus routing)
+```hcl
+resource "aws_cloudwatch_event_target" "cross_bus" {
+  rule           = aws_cloudwatch_event_rule.this.name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "cross-bus-target"
+  arn            = "arn:aws:events:us-east-1:${var.target_account_id}:event-bus/target-bus"
+  role_arn       = aws_iam_role.eventbridge_cross_bus.arn
+}
+```
+
+### Kinesis Target
+```hcl
+resource "aws_cloudwatch_event_target" "kinesis" {
+  rule           = aws_cloudwatch_event_rule.this.name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "kinesis-target"
+  arn            = aws_kinesis_stream.this.arn
+  role_arn       = aws_iam_role.eventbridge_kinesis.arn
+
+  kinesis_target {
+    partition_key_path = "$.detail.orderId"  # JSONPath for partition key
+  }
+}
+```
+
+### ECS Task Target (run task on event)
+```hcl
+resource "aws_cloudwatch_event_target" "ecs" {
+  rule           = aws_cloudwatch_event_rule.this.name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "ecs-target"
+  arn            = aws_ecs_cluster.this.arn
+  role_arn       = aws_iam_role.eventbridge_ecs.arn
+
+  ecs_target {
+    task_definition_arn = aws_ecs_task_definition.this.arn
+    task_count          = 1
+    launch_type         = "FARGATE"
+    platform_version    = "LATEST"
+
+    network_configuration {
+      subnets          = var.private_subnet_ids
+      security_groups  = [aws_security_group.ecs.id]
+      assign_public_ip = false
+    }
+
+    # Pass container overrides via input transformer
+    # container_overrides in input_transformer
+  }
+
+  input_transformer {
+    input_paths = {
+      orderId = "$.detail.orderId"
+    }
+    input_template = jsonencode({
+      containerOverrides = [{
+        name    = "my-container"
+        command = ["process", "<orderId>"]
+        environment = [{
+          name  = "ORDER_ID"
+          value = "<orderId>"
+        }]
+      }]
+    })
+  }
+}
+```
+
+### CloudWatch Log Group Target (for debugging/storage)
+```hcl
+resource "aws_cloudwatch_log_group" "event_log" {
+  name              = "/aws/events/${var.app_name}"
+  retention_in_days = 7
+  tags              = var.tags
+}
+
+resource "aws_cloudwatch_log_resource_policy" "eventbridge" {
+  policy_name = "eventbridge-${var.app_name}"
+
+  policy_document = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = { Service = ["events.amazonaws.com", "delivery.logs.amazonaws.com"] }
+      Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+      Resource = "${aws_cloudwatch_log_group.event_log.arn}:*"
+    }]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "logs" {
+  rule           = aws_cloudwatch_event_rule.this.name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "cloudwatch-logs"
+  arn            = aws_cloudwatch_log_group.event_log.arn
+}
+```
+
+---
+
+## 6. Input Transformation
+
+### Three Modes
+
+| Mode | Description | Terraform Attribute |
+|---|---|---|
+| **Matched Event** | Send full original event (default) | No `input*` attributes |
+| **Constant JSON** | Send static JSON string | `input = jsonencode({...})` |
+| **Input Transformer** | Extract fields + build new JSON | `input_transformer {}` block |
+
+### Constant Input
+```hcl
+resource "aws_cloudwatch_event_target" "this" {
+  # ...
+  input = jsonencode({
+    action  = "process"
+    version = "v2"
   })
 }
 ```
 
-**Rule target in Account A pointing to Account B bus:**
-
+### Input Transformer
 ```hcl
-resource "aws_cloudwatch_event_target" "cross_account" {
-  rule      = aws_cloudwatch_event_rule.this.name
-  target_id = "cross-account-bus"
-  arn       = "arn:aws:events:us-east-1:ACCOUNT_B_ID:event-bus/central-bus"
-  role_arn  = aws_iam_role.eb_cross_account.arn  # must have events:PutEvents on target bus
+resource "aws_cloudwatch_event_target" "this" {
+  # ...
+  input_transformer {
+    # Step 1: Extract fields using JSONPath
+    input_paths = {
+      orderId   = "$.detail.orderId"
+      userId    = "$.detail.userId"
+      total     = "$.detail.total"
+      eventTime = "$.time"
+      source    = "$.source"
+      region    = "$.region"
+      account   = "$.account"
+    }
+
+    # Step 2: Build new JSON using <variable> placeholders
+    # Must be valid JSON — use jsonencode for safety
+    input_template = <<EOF
+{
+  "order_id": "<orderId>",
+  "user_id": "<userId>",
+  "amount": <total>,
+  "processed_at": "<eventTime>",
+  "event_source": "<source>",
+  "aws_region": "<region>"
+}
+EOF
+  }
 }
 ```
 
-### Cross-Region
+### Input Path Rules
+- Uses **JSONPath** syntax: `$.field`, `$.nested.field`, `$.array[0]`
+- Variable names: alphanumeric + underscore, must start with letter.
+- Up to 100 input paths per rule.
+- `<aws.events.event.ingestion-time>` — special variable for ingestion timestamp.
+- `<aws.events.event>` — entire event as JSON string.
 
-EventBridge does not natively forward events across regions. To route cross-region:
-
-1. Use a Lambda target that calls `PutEvents` to the target region.
-2. Or use EventBridge Pipes with an enrichment step.
-
-**Global EventBridge (as of 2024)** — AWS announced Global EventBridge for routing to buses in other regions natively, available in preview in some regions. Check the latest AWS docs before using.
-
----
-
-## 14. EventBridge Pipes
-
-Pipes provide **point-to-point** integrations with filtering, enrichment, and transformation between a source and a target.
-
-**Key difference from Rules:** Rules are one-to-many fan-out from a bus. Pipes are one-to-one with stateful processing (polling sources, batching, enrichment).
-
-### Components
-
-```
-Source → [Filter] → [Enrichment] → [Transform] → Target
-```
-
-| Component | Description |
-|---|---|
-| **Source** | Kinesis, DynamoDB Streams, SQS, Kafka, ActiveMQ, RabbitMQ |
-| **Filter** | JSON pattern filter — same syntax as EventBridge rules |
-| **Enrichment** | Lambda, Step Functions, API Gateway, API Destination (optional) |
-| **Target** | 14+ targets including Lambda, SQS, SNS, EventBridge buses, HTTP endpoints |
-
-### Terraform — `aws_pipes_pipe`
-
-```hcl
-resource "aws_pipes_pipe" "this" {
-  name     = "sqs-to-lambda"
-  role_arn = aws_iam_role.pipe.arn
-
-  source     = aws_sqs_queue.source.arn
-  target     = aws_lambda_function.processor.arn
-
-  source_parameters {
-    sqs_queue_parameters {
-      batch_size                         = 10
-      maximum_batching_window_in_seconds = 5
-    }
-    filter_criteria {
-      filter {
-        pattern = jsonencode({
-          body = { eventType = ["ORDER_CREATED"] }
-        })
-      }
-    }
-  }
-
-  enrichment = aws_lambda_function.enricher.arn
-
-  target_parameters {
-    lambda_function_parameters {
-      invocation_type = "FIRE_AND_FORGET"  # or REQUEST_RESPONSE
-    }
-  }
+### Common JSONPath Extractions
+```json
+{
+  "id":          "$.id",
+  "source":      "$.source",
+  "detailType":  "$.detail-type",
+  "region":      "$.region",
+  "account":     "$.account",
+  "time":        "$.time",
+  "resources":   "$.resources[0]",
+  "orderId":     "$.detail.orderId",
+  "nestedField": "$.detail.nested.field"
 }
 ```
 
 ---
 
-## 15. EventBridge Scheduler
+## 7. Scheduling (EventBridge Scheduler)
 
-A **separate service** from EventBridge Events for creating millions of scheduled invocations. Distinct from EventBridge Rules schedules.
+### Scheduler vs CloudWatch Events Rules
 
-### Key Differences vs EventBridge Rules Schedules
-
-| Feature | EventBridge Rules | EventBridge Scheduler |
+| Feature | EventBridge Scheduler | CloudWatch Events Rules (cron) |
 |---|---|---|
-| Scale | Hundreds of rules | Millions of schedules |
-| Timezone support | UTC only | All IANA timezones |
-| One-time schedules | No | Yes (`at(...)`) |
-| Flexible time windows | No | Yes |
-| State management | Rules are always "on" | Individual schedule enable/disable |
-| Drift compensation | No | Yes (flexible window) |
+| One-time schedules | ✅ | ❌ |
+| Flexible time windows | ✅ | ❌ |
+| Schedule groups | ✅ | ❌ |
+| Timezone support | ✅ | ❌ (UTC only) |
+| Target count | 1 per schedule | 5 per rule |
+| Max schedules | 1M+ | 300 per bus |
+| Recommendation | Use for new work | Legacy |
 
-### Terraform — `aws_scheduler_schedule`
+### Schedule Expressions
 
+| Type | Format | Example |
+|---|---|---|
+| Rate | `rate(value unit)` | `rate(5 minutes)`, `rate(1 hour)`, `rate(7 days)` |
+| Cron | `cron(min hr dom mon dow yr)` | `cron(0 12 * * ? *)` = noon UTC daily |
+| One-time | ISO 8601 datetime | `2024-12-31T23:59:00` |
+
+### Cron Expression Reference
+```
+cron(minute hour day-of-month month day-of-week year)
+
+minute:       0-59, * (any), , (list), - (range), / (increment)
+hour:         0-23
+day-of-month: 1-31, * (any), ? (no spec), L (last), W (weekday nearest)
+month:        1-12 or JAN-DEC
+day-of-week:  1-7 or SUN-SAT, ? (no spec), L (last X of month), # (nth weekday)
+year:         1970-2199, * (any)
+
+Note: day-of-month AND day-of-week cannot both be non-"?" at the same time
+
+Examples:
+cron(0 9 * * MON-FRI *)   → 9 AM UTC every weekday
+cron(0 0 1 * ? *)          → midnight on the 1st of every month
+cron(0/15 * * * ? *)       → every 15 minutes
+cron(0 17 ? * FRI *)       → 5 PM UTC every Friday
+cron(0 8 ? * 2#1 *)        → 8 AM UTC first Monday of month
+cron(0 0 L * ? *)           → midnight on last day of month
+```
+
+### Terraform: EventBridge Scheduler
 ```hcl
-resource "aws_scheduler_schedule" "this" {
-  name       = "daily-report"
-  group_name = "my-app"
+resource "aws_scheduler_schedule_group" "this" {
+  name = "${var.app_name}-${var.environment}"
+  tags = var.tags
+}
 
+# Recurring schedule
+resource "aws_scheduler_schedule" "recurring" {
+  name       = "${var.app_name}-daily-report"
+  group_name = aws_scheduler_schedule_group.this.name
+  description = "Daily report generation"
+
+  schedule_expression          = "cron(0 8 * * ? *)"   # 8 AM UTC daily
+  schedule_expression_timezone = "America/New_York"      # timezone-aware
+
+  state = "ENABLED"  # "ENABLED" or "DISABLED"
+
+  # Flexible time window — invoke within window to smooth traffic
   flexible_time_window {
-    mode                      = "FLEXIBLE"  # or OFF
-    maximum_window_in_minutes = 30
+    mode                      = "FLEXIBLE"  # "OFF" or "FLEXIBLE"
+    maximum_window_in_minutes = 15          # invoke within 15min of scheduled time
   }
 
-  schedule_expression          = "cron(0 9 * * ? *)"
-  schedule_expression_timezone = "America/New_York"
-  start_date                   = "2026-03-01T00:00:00Z"
-  end_date                     = "2027-03-01T00:00:00Z"
-  state                        = "ENABLED"
+  # OR: exact time window (no flexibility)
+  # flexible_time_window { mode = "OFF" }
 
   target {
-    arn      = aws_lambda_function.reporter.arn
+    arn      = aws_lambda_function.report.arn
     role_arn = aws_iam_role.scheduler.arn
 
-    input = jsonencode({ report_type = "daily" })
+    input = jsonencode({
+      reportType = "daily"
+      format     = "pdf"
+    })
 
     retry_policy {
       maximum_event_age_in_seconds = 3600
@@ -780,61 +889,289 @@ resource "aws_scheduler_schedule" "this" {
     }
   }
 }
+
+# One-time schedule
+resource "aws_scheduler_schedule" "one_time" {
+  name       = "${var.app_name}-migration-job"
+  group_name = aws_scheduler_schedule_group.this.name
+
+  schedule_expression = "at(2024-12-31T23:00:00)"   # one-time at specific time
+
+  flexible_time_window { mode = "OFF" }
+
+  # Auto-delete after completion
+  # (no built-in auto-delete; manage with lifecycle or Lambda)
+
+  target {
+    arn      = aws_sfn_state_machine.migration.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    input = jsonencode({ migrationVersion = "v3" })
+  }
+}
 ```
 
-### Schedule Formats (Scheduler)
-
-- `rate(5 minutes)` — interval
-- `cron(0 9 * * ? *)` — standard cron
-- `at(2026-12-31T23:59:59)` — one-time future schedule
-
-### IAM for Scheduler
-
+### Scheduler IAM Role
 ```hcl
 resource "aws_iam_role" "scheduler" {
-  name = "eventbridge-scheduler-role"
+  name = "${var.app_name}-scheduler-role"
+
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
       Principal = { Service = "scheduler.amazonaws.com" }
       Action    = "sts:AssumeRole"
+      Condition = {
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
     }]
   })
+}
+
+resource "aws_iam_role_policy" "scheduler" {
+  role = aws_iam_role.scheduler.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = [
+          aws_lambda_function.report.arn,
+          "${aws_lambda_function.report.arn}:*",  # for aliases/versions
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = "states:StartExecution"
+        Resource = aws_sfn_state_machine.migration.arn
+      },
+      # For DLQ:
+      {
+        Effect   = "Allow"
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.dlq.arn
+      }
+    ]
+  })
+}
+```
+
+### Scheduler Targets (supports more than EventBridge Rules)
+- Lambda, Step Functions, SQS, SNS, ECS Task, Kinesis, Firehose
+- CodeBuild, CodePipeline, Inspector, Glue, SageMaker Pipeline
+- EventBridge event bus (send event on schedule)
+- **Universal targets** via `arn:aws:scheduler:::aws-sdk:*` — call any AWS API action on schedule
+
+```hcl
+# Universal target — call any AWS SDK action
+resource "aws_scheduler_schedule" "rds_stop" {
+  name = "stop-rds-dev-nights"
+
+  schedule_expression          = "cron(0 22 * * ? *)"   # 10 PM UTC
+  schedule_expression_timezone = "UTC"
+
+  flexible_time_window { mode = "OFF" }
+
+  target {
+    # Universal target format: arn:aws:scheduler:::aws-sdk:service:action
+    arn      = "arn:aws:scheduler:::aws-sdk:rds:stopDBInstance"
+    role_arn = aws_iam_role.scheduler.arn
+
+    input = jsonencode({
+      DbInstanceIdentifier = var.rds_instance_id
+    })
+  }
 }
 ```
 
 ---
 
-## 16. Schema Registry & Discovery
+## 8. EventBridge Pipes
 
-EventBridge Schema Registry automatically discovers event schemas from your buses and stores them.
+### What Pipes Are
+- **Point-to-point** integration between a source and a target.
+- Optional **filtering**, **enrichment** (Lambda/API GW/Step Functions), and **transformation**.
+- Managed polling from sources (SQS, Kinesis, DynamoDB Streams, MSK, Kafka).
+- Simplifies the Lambda-as-glue pattern.
 
-### Features
+### Pipe Architecture
+```
+Source (poll-based or push)
+  └─→ [Filter] (optional — reduce events before enrichment)
+        └─→ [Enrichment] (optional — Lambda/APIGW/SFN/EventBridge)
+              └─→ [Target Transformation] (optional)
+                    └─→ Target
+```
 
-| Feature | Description |
+### Supported Sources
+
+| Source | Notes |
 |---|---|
-| Auto-discovery | Enable on a bus → EventBridge infers schemas from real events |
-| Schema versioning | Each update creates a new version; previous versions retained |
-| Code bindings | Download strongly-typed bindings for Java, Python, TypeScript |
-| Pre-built schemas | 100+ AWS service event schemas available in `aws.events` registry |
+| SQS | Polls the queue |
+| Kinesis Data Streams | Polls shards |
+| DynamoDB Streams | Polls stream |
+| MSK (Amazon Managed Kafka) | Polls topics |
+| Self-managed Kafka | Polls topics |
+| Amazon MQ (RabbitMQ / ActiveMQ) | Polls queues/topics |
 
-### Terraform — Schema Discovery
+### Supported Targets (same as EventBridge Rules + more)
+Lambda, Step Functions, SQS, SNS, Kinesis, Firehose, API Gateway, API Destination, EventBridge bus, CloudWatch Logs, ECS Task, Redshift, SageMaker Pipeline
 
+### Terraform: EventBridge Pipe
 ```hcl
-resource "aws_schemas_discoverer" "this" {
-  source_arn  = aws_cloudwatch_event_bus.app.arn
-  description = "Auto-discover schemas for app-events bus"
-  tags        = { Environment = "prod" }
+resource "aws_pipes_pipe" "this" {
+  name        = "${var.app_name}-pipe"
+  description = "SQS to Lambda with enrichment"
+  role_arn    = aws_iam_role.pipe.arn
+
+  source = aws_sqs_queue.source.arn
+
+  source_parameters {
+    sqs_queue_parameters {
+      batch_size                         = 10
+      maximum_batching_window_in_seconds = 30
+    }
+
+    # Filter before enrichment (reduce Lambda invocations)
+    filter_criteria {
+      filter {
+        pattern = jsonencode({
+          body = {
+            eventType = ["ORDER_PLACED"]
+            amount    = [{ numeric = [">", 0] }]
+          }
+        })
+      }
+    }
+  }
+
+  # Enrichment (optional) — call Lambda to add data before target
+  enrichment = aws_lambda_function.enricher.arn
+
+  enrichment_parameters {
+    input_template = jsonencode({
+      orderId = "<$.body.orderId>"
+      userId  = "<$.body.userId>"
+    })
+  }
+
+  target = aws_sfn_state_machine.processor.arn
+
+  target_parameters {
+    step_function_state_machine_parameters {
+      invocation_type = "FIRE_AND_FORGET"  # or "REQUEST_RESPONSE"
+    }
+
+    input_template = jsonencode({
+      orderId     = "<$.body.orderId>"
+      enrichedData = "<$.enrichmentResult>"
+    })
+  }
+
+  tags = var.tags
+}
+
+resource "aws_iam_role" "pipe" {
+  name = "${var.app_name}-pipe-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "pipes.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "pipe" {
+  role = aws_iam_role.pipe.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        Resource = aws_sqs_queue.source.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = aws_lambda_function.enricher.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = "states:StartExecution"
+        Resource = aws_sfn_state_machine.processor.arn
+      }
+    ]
+  })
 }
 ```
 
-### Terraform — Schema (manual)
-
+### Pipe with Kinesis Source
 ```hcl
+resource "aws_pipes_pipe" "kinesis" {
+  name     = "${var.app_name}-kinesis-pipe"
+  role_arn = aws_iam_role.pipe.arn
+
+  source = aws_kinesis_stream.this.arn
+
+  source_parameters {
+    kinesis_stream_parameters {
+      starting_position                   = "LATEST"  # or "TRIM_HORIZON", "AT_TIMESTAMP"
+      batch_size                          = 100
+      maximum_batching_window_in_seconds  = 30
+      maximum_retry_attempts              = 3
+      bisect_batch_on_function_error      = true
+      maximum_record_age_in_seconds       = 3600
+      parallelization_factor              = 5
+
+      dead_letter_config {
+        arn = aws_sqs_queue.dlq.arn
+      }
+    }
+  }
+
+  target = aws_lambda_function.processor.arn
+}
+```
+
+---
+
+## 9. Schema Registry & Discovery
+
+### What Schema Registry Provides
+- Stores event schemas in **OpenAPI 3.0** or **JSON Schema Draft4** format.
+- **Schema discovery**: automatically discovers schemas from events on the event bus.
+- **Code binding generation**: generate code (Python, Java, TypeScript, Go) for event types.
+- Schemas for AWS services pre-built in the `aws.events` registry.
+
+### Enable Schema Discovery
+```hcl
+resource "aws_schemas_discoverer" "this" {
+  source_arn  = aws_cloudwatch_event_bus.this.arn
+  description = "Auto-discover schemas from ${var.app_name} bus"
+  cross_account = false  # true = discover from cross-account events too
+  tags        = var.tags
+}
+```
+
+### Create Schema Manually
+```hcl
+resource "aws_schemas_registry" "this" {
+  name        = "${var.app_name}-registry"
+  description = "Event schemas for ${var.app_name}"
+  tags        = var.tags
+}
+
 resource "aws_schemas_schema" "order_placed" {
   name          = "com.myapp.orders@OrderPlaced"
-  registry_name = "discovered-schemas"
+  registry_name = aws_schemas_registry.this.name
   type          = "OpenApi3"
   description   = "Schema for OrderPlaced events"
 
@@ -846,15 +1183,37 @@ resource "aws_schemas_schema" "order_placed" {
       schemas = {
         AWSEvent = {
           type = "object"
+          required = ["detail-type", "resources", "detail", "id", "source", "time", "region", "version", "account"]
+          "x-amazon-events-detail-type"  = "OrderPlaced"
+          "x-amazon-events-source"       = "com.myapp.orders"
           properties = {
-            detail = { "$ref" = "#/components/schemas/OrderPlaced" }
+            detail     = { "$ref" = "#/components/schemas/OrderPlaced" }
+            account    = { type = "string" }
+            "detail-type" = { type = "string" }
+            id         = { type = "string" }
+            region     = { type = "string" }
+            resources  = { type = "array", items = { type = "string" } }
+            source     = { type = "string" }
+            time       = { type = "string", format = "date-time" }
+            version    = { type = "string" }
           }
         }
         OrderPlaced = {
           type = "object"
+          required = ["orderId", "userId", "total"]
           properties = {
             orderId = { type = "string" }
-            amount  = { type = "number" }
+            userId  = { type = "string" }
+            total   = { type = "number" }
+            status  = { type = "string", enum = ["PLACED", "CONFIRMED"] }
+            items   = { type = "array", items = { "$ref" = "#/components/schemas/OrderItem" } }
+          }
+        }
+        OrderItem = {
+          type = "object"
+          properties = {
+            productId = { type = "string" }
+            quantity  = { type = "integer", minimum = 1 }
           }
         }
       }
@@ -865,249 +1224,674 @@ resource "aws_schemas_schema" "order_placed" {
 
 ---
 
-## 17. IAM & Security
+## 10. Archive & Replay
 
-### Permissions Required to Publish Events
+### Archive
+- Store events that match a pattern on an event bus.
+- Infinite or configurable retention.
+- Stored events can be replayed to any event bus.
+- Use for: disaster recovery, debugging, re-processing after bug fixes.
 
-```json
-{
-  "Effect": "Allow",
-  "Action": "events:PutEvents",
-  "Resource": "arn:aws:events:<region>:<account>:event-bus/<bus-name>"
+```hcl
+resource "aws_cloudwatch_event_archive" "this" {
+  name             = "${var.app_name}-archive"
+  event_source_arn = aws_cloudwatch_event_bus.this.arn
+  description      = "Archive all events from ${var.app_name} bus"
+  retention_days   = 30  # 0 = infinite retention
+
+  # Optional: filter which events to archive
+  event_pattern = jsonencode({
+    source = ["com.myapp.orders"]
+  })
 }
 ```
 
-Scope to specific bus ARNs — do not use `*`.
+### Replay
+```hcl
+# Replay archived events (typically via CLI or console)
+# No direct Terraform resource for creating a replay (one-time operation)
+# CLI:
+# aws events start-replay \
+#   --replay-name "replay-2024-06-01" \
+#   --event-source-arn arn:aws:events:us-east-1:123456789012:archive/my-archive \
+#   --event-start-time "2024-06-01T00:00:00Z" \
+#   --event-end-time "2024-06-01T23:59:59Z" \
+#   --destination '{
+#     "Arn": "arn:aws:events:us-east-1:123456789012:event-bus/my-bus",
+#     "FilterArns": ["arn:aws:events:us-east-1:123456789012:rule/my-bus/my-rule"]
+#   }'
+```
 
-### Permissions Required by EventBridge to Invoke Targets
+### Replay Considerations
+- Replayed events have an additional field: `"replay-name"` in the event.
+- Replay preserves original event `time` field.
+- Rules can filter out replay events using: `{ "replay-name": [{ "exists": false }] }`.
+- Replay throughput: up to 10,000 events/second.
 
-**Lambda:** Resource-based policy (see §8).
+---
 
-**SQS, Kinesis, SNS, Step Functions (and most others):** IAM role assumed by EventBridge:
+## 11. Cross-Account & Cross-Region Events
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": { "Service": "events.amazonaws.com" },
-    "Action": "sts:AssumeRole"
-  }]
+### Cross-Account Pattern
+
+**Producer Account** → **Consumer Account Event Bus** → **Rules** → **Targets**
+
+```hcl
+# ── Consumer Account ──────────────────────────────────────
+# 1. Create receiving event bus
+resource "aws_cloudwatch_event_bus" "receiver" {
+  name = "cross-account-receiver"
+}
+
+# 2. Allow producer account to publish
+resource "aws_cloudwatch_event_bus_policy" "allow_producer" {
+  event_bus_name = aws_cloudwatch_event_bus.receiver.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "AllowProducerAccount"
+      Effect = "Allow"
+      Principal = { AWS = "arn:aws:iam::${var.producer_account_id}:root" }
+      Action   = "events:PutEvents"
+      Resource = aws_cloudwatch_event_bus.receiver.arn
+    }]
+  })
+}
+
+# 3. Create rule + target in consumer account
+resource "aws_cloudwatch_event_rule" "cross_account" {
+  event_bus_name = aws_cloudwatch_event_bus.receiver.name
+  event_pattern  = jsonencode({ source = ["com.myapp.orders"] })
+}
+
+resource "aws_cloudwatch_event_target" "cross_account" {
+  rule           = aws_cloudwatch_event_rule.cross_account.name
+  event_bus_name = aws_cloudwatch_event_bus.receiver.name
+  arn            = aws_lambda_function.processor.arn
+}
+
+# ── Producer Account ──────────────────────────────────────
+# 4. Create rule to forward events to consumer bus
+resource "aws_cloudwatch_event_rule" "forward" {
+  event_bus_name = "default"
+  event_pattern  = jsonencode({ source = ["com.myapp.orders"] })
+}
+
+resource "aws_iam_role" "eventbridge_cross_account" {
+  name = "EventBridgeCrossAccountRole"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "eventbridge_cross_account" {
+  role = aws_iam_role.eventbridge_cross_account.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "events:PutEvents"
+      Resource = "arn:aws:events:us-east-1:${var.consumer_account_id}:event-bus/cross-account-receiver"
+    }]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "cross_account_forward" {
+  rule      = aws_cloudwatch_event_rule.forward.name
+  target_id = "forward-to-consumer"
+  arn       = "arn:aws:events:us-east-1:${var.consumer_account_id}:event-bus/cross-account-receiver"
+  role_arn  = aws_iam_role.eventbridge_cross_account.arn
 }
 ```
 
-Attach a policy granting the appropriate actions on the target resource to this role.
+### Cross-Region Pattern
+- Same as cross-account but targeting a bus in a different region.
+- No special bus policy needed for same-account cross-region.
+- Requires IAM role with `events:PutEvents` permission on the target bus.
 
-### Least-Privilege Patterns
+```hcl
+resource "aws_cloudwatch_event_target" "cross_region" {
+  rule      = aws_cloudwatch_event_rule.this.name
+  target_id = "forward-to-eu"
+  arn       = "arn:aws:events:eu-west-1:${data.aws_caller_identity.current.account_id}:event-bus/eu-bus"
+  role_arn  = aws_iam_role.eventbridge_cross_region.arn
+}
+```
 
-| Scenario | Recommendation |
+---
+
+## 12. API Destinations
+
+### What API Destinations Are
+- Send events to any **HTTP/HTTPS endpoint** (SaaS tools, webhooks, third-party APIs).
+- Managed auth: API key, OAuth 2.0, Basic auth.
+- Rate limiting per destination.
+- EventBridge handles retries with backoff.
+
+### Connection (Auth Config)
+```hcl
+# API Key Auth
+resource "aws_cloudwatch_event_connection" "api_key" {
+  name               = "${var.app_name}-api-key-connection"
+  authorization_type = "API_KEY"
+
+  auth_parameters {
+    api_key {
+      key   = "X-Api-Key"
+      value = var.external_api_key  # stored in Secrets Manager by EventBridge
+    }
+  }
+}
+
+# OAuth 2.0
+resource "aws_cloudwatch_event_connection" "oauth" {
+  name               = "${var.app_name}-oauth-connection"
+  authorization_type = "OAUTH_CLIENT_CREDENTIALS"
+
+  auth_parameters {
+    oauth {
+      authorization_endpoint = "https://auth.example.com/oauth/token"
+      http_method            = "POST"
+
+      client_parameters {
+        client_id     = var.oauth_client_id
+        client_secret = var.oauth_client_secret
+      }
+
+      oauth_http_parameters {
+        body {
+          key             = "grant_type"
+          value           = "client_credentials"
+          is_value_secret = false
+        }
+        body {
+          key             = "scope"
+          value           = "events:write"
+          is_value_secret = false
+        }
+      }
+    }
+  }
+}
+
+# Basic Auth
+resource "aws_cloudwatch_event_connection" "basic" {
+  name               = "${var.app_name}-basic-connection"
+  authorization_type = "BASIC"
+
+  auth_parameters {
+    basic {
+      username = var.api_username
+      password = var.api_password
+    }
+  }
+}
+```
+
+### API Destination
+```hcl
+resource "aws_cloudwatch_event_api_destination" "this" {
+  name                             = "${var.app_name}-webhook"
+  description                      = "Send events to external webhook"
+  invocation_endpoint              = "https://webhook.example.com/events"
+  http_method                      = "POST"  # GET, POST, PUT, PATCH, DELETE, HEAD
+  connection_arn                   = aws_cloudwatch_event_connection.api_key.arn
+  invocation_rate_limit_per_second = 300     # max requests/second to endpoint
+
+}
+
+resource "aws_cloudwatch_event_target" "api_dest" {
+  rule           = aws_cloudwatch_event_rule.this.name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "api-destination"
+  arn            = aws_cloudwatch_event_api_destination.this.arn
+  role_arn       = aws_iam_role.eventbridge_api_dest.arn
+
+  # Transform event before sending
+  input_transformer {
+    input_paths = {
+      orderId = "$.detail.orderId"
+      total   = "$.detail.total"
+    }
+    input_template = jsonencode({
+      event     = "order.placed"
+      order_id  = "<orderId>"
+      amount    = "<total>"
+    })
+  }
+
+  # HTTP parameters added to the request
+  http_target {
+    path_parameter_values   = []
+    query_string_parameters = { version = "v2", env = var.environment }
+    header_parameters       = { "X-Source" = "eventbridge" }
+  }
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 3
+  }
+
+  dead_letter_config {
+    arn = aws_sqs_queue.dlq.arn
+  }
+}
+
+resource "aws_iam_role" "eventbridge_api_dest" {
+  name = "${var.app_name}-api-dest-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "eventbridge_api_dest" {
+  role = aws_iam_role.eventbridge_api_dest.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "events:InvokeApiDestination"
+      Resource = aws_cloudwatch_event_api_destination.this.arn
+    }]
+  })
+}
+```
+
+---
+
+## 13. Dead Letter Queues & Error Handling
+
+### Retry Behavior (Rules Targets)
+- EventBridge retries failed target invocations.
+- Default: retry for **24 hours** with exponential backoff.
+- Configurable per target: `maximum_event_age_in_seconds` (60-86400) and `maximum_retry_attempts` (0-185).
+- After exhausting retries → event goes to DLQ (if configured) or is dropped.
+
+### DLQ per Target
+```hcl
+resource "aws_cloudwatch_event_target" "with_dlq" {
+  rule      = aws_cloudwatch_event_rule.this.name
+  target_id = "lambda-with-dlq"
+  arn       = aws_lambda_function.processor.arn
+
+  retry_policy {
+    maximum_event_age_in_seconds = 7200  # 2 hours
+    maximum_retry_attempts       = 5
+  }
+
+  dead_letter_config {
+    arn = aws_sqs_queue.event_dlq.arn
+  }
+}
+
+resource "aws_sqs_queue" "event_dlq" {
+  name                       = "${var.app_name}-event-dlq"
+  message_retention_seconds  = 1209600  # 14 days
+  kms_master_key_id          = aws_kms_key.sqs.id
+  tags                       = var.tags
+}
+
+resource "aws_sqs_queue_policy" "dlq" {
+  queue_url = aws_sqs_queue.event_dlq.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "AllowEventBridgeSendDLQ"
+      Effect = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+      Action   = "sqs:SendMessage"
+      Resource = aws_sqs_queue.event_dlq.arn
+    }]
+  })
+}
+```
+
+### DLQ Message Structure
+When an event fails, the DLQ message contains:
+```json
+{
+  "version": "1.0",
+  "timestamp": "2024-06-01T12:00:00.000Z",
+  "requestContext": {
+    "requestId": "abc-123",
+    "functionArn": "arn:aws:lambda:...",
+    "condition": "RetryAttemptsExhausted",
+    "approximateInvokeCount": 6
+  },
+  "requestPayload": {
+    "version": "0",
+    "source": "com.myapp.orders",
+    "detail-type": "OrderPlaced",
+    "detail": { "orderId": "ORD-789" }
+  },
+  "responseContext": {
+    "statusCode": 500,
+    "executedVersion": "$LATEST",
+    "functionError": "Unhandled"
+  },
+  "responsePayload": { ... }
+}
+```
+
+### Error Conditions that Trigger Retry
+- Lambda returns error or throws exception.
+- Lambda throttled (concurrency limit hit).
+- Lambda function doesn't exist.
+- SQS queue full or throttled.
+- Target returns 5xx HTTP error (API Destinations).
+- Target is not accessible.
+
+### Error Conditions that DON'T Retry
+- Lambda returns 200 but has application error in body.
+- Target returns 4xx (except 429 Too Many Requests).
+- Invalid event format.
+- Permissions error (fix required — retrying won't help).
+
+---
+
+## 14. IAM & Permissions
+
+### EventBridge Service Role (for targets requiring IAM)
+Some targets require EventBridge to assume a role:
+- Cross-account event bus
+- Step Functions
+- Kinesis Data Streams
+- Kinesis Firehose
+- ECS tasks
+- API Destinations
+- SSM Run Command / Automation
+
+Lambda, SQS, SNS use **resource-based policies** (not role-based).
+
+```hcl
+# Generic EventBridge execution role
+resource "aws_iam_role" "eventbridge" {
+  name = "${var.app_name}-eventbridge-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      Condition = {
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "eventbridge" {
+  role = aws_iam_role.eventbridge.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      # Step Functions
+      {
+        Effect   = "Allow"
+        Action   = ["states:StartExecution"]
+        Resource = var.sfn_state_machine_arns
+      },
+      # Kinesis
+      {
+        Effect   = "Allow"
+        Action   = ["kinesis:PutRecord", "kinesis:PutRecords"]
+        Resource = var.kinesis_stream_arns
+      },
+      # Firehose
+      {
+        Effect   = "Allow"
+        Action   = ["firehose:PutRecord", "firehose:PutRecordBatch"]
+        Resource = var.firehose_arns
+      },
+      # ECS
+      {
+        Effect   = "Allow"
+        Action   = ["ecs:RunTask"]
+        Resource = var.ecs_task_definition_arns
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["iam:PassRole"]
+        Resource = var.ecs_task_role_arns
+        Condition = {
+          StringLike = { "iam:PassedToService" = "ecs-tasks.amazonaws.com" }
+        }
+      },
+    ]
+  })
+}
+```
+
+### Lambda Resource Policy
+```hcl
+resource "aws_lambda_permission" "eventbridge" {
+  statement_id  = "AllowEventBridgeInvoke-${var.rule_name}"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.processor.function_name
+  qualifier     = aws_lambda_alias.live.name  # optional: target alias
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.this.arn
+  # Optionally restrict: source_account = data.aws_caller_identity.current.account_id
+}
+```
+
+### IAM Policy for PutEvents (producer application)
+```hcl
+data "aws_iam_policy_document" "put_events" {
+  statement {
+    effect  = "Allow"
+    actions = ["events:PutEvents"]
+    resources = [
+      aws_cloudwatch_event_bus.this.arn,
+      # "arn:aws:events:${var.region}:${data.aws_caller_identity.current.account_id}:event-bus/default"
+    ]
+  }
+}
+```
+
+---
+
+## 15. Observability — Metrics & Alarms
+
+### CloudWatch Metrics — EventBridge Rules (namespace: `AWS/Events`)
+
+| Metric | Description | Stat |
+|---|---|---|
+| `Invocations` | Times a rule matched and invoked targets | Sum |
+| `FailedInvocations` | Times a target invocation failed (all retries exhausted) | Sum |
+| `ThrottledRules` | Times rules were throttled (account limit) | Sum |
+| `MatchedEvents` | Events matched by at least one rule | Sum |
+| `TriggeredRules` | Rules triggered (matched + attempted) | Sum |
+| `DeadLetterInvocations` | Events sent to DLQ | Sum |
+
+Dimensions: `RuleName`, `EventBusName`
+
+### CloudWatch Metrics — EventBridge Scheduler (namespace: `AWS/Scheduler`)
+
+| Metric | Description |
 |---|---|
-| Lambda targets | Use `source_arn` scoped to the rule ARN in `aws_lambda_permission` |
-| SQS targets | One IAM role per bus or per group of related rules |
-| Cross-account | Use `aws:SourceAccount` condition in trust policies |
-| PutEvents from app | Scope `Resource` to the specific bus ARN; never `*` |
+| `InvocationAttemptCount` | Invocation attempts |
+| `InvocationThrottleCount` | Throttled invocations |
+| `InvocationDroppedCount` | Dropped invocations |
+| `TargetErrorCount` | Target invocation errors |
+| `TargetErrorThrottledCount` | Throttled target errors |
 
-### VPC Endpoint for EventBridge
-
-EventBridge supports a VPC Interface Endpoint (`com.amazonaws.<region>.events`). Use this when your producers run in a VPC and you want traffic to stay on the AWS network:
-
-```hcl
-resource "aws_vpc_endpoint" "events" {
-  vpc_id              = aws_vpc.main.id
-  service_name        = "com.amazonaws.us-east-1.events"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = [aws_subnet.private_a.id, aws_subnet.private_b.id]
-  security_group_ids  = [aws_security_group.vpc_endpoint.id]
-  private_dns_enabled = true
-}
-```
-
----
-
-## 18. Encryption (KMS)
-
-### Encryption at Rest
-
-Custom event buses can be encrypted with a customer-managed KMS key:
-
-```hcl
-resource "aws_cloudwatch_event_bus" "this" {
-  name               = "secure-bus"
-  kms_key_identifier = aws_kms_key.eb.arn
-}
-```
-
-**Key policy additions required:**
-
-```json
-{
-  "Sid": "AllowEventBridgeToUseKey",
-  "Effect": "Allow",
-  "Principal": { "Service": "events.amazonaws.com" },
-  "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
-  "Resource": "*"
-}
-```
-
-### Event Archives
-
-Archives use AWS-managed encryption by default. There is no option to specify a customer-managed KMS key for archives at this time.
-
-### CloudWatch Logs (Event Logging)
-
-When using the event logging feature, the CloudWatch Log Group can be encrypted with a KMS key:
-
-```hcl
-resource "aws_cloudwatch_log_group" "event_logs" {
-  name       = "/aws/events/my-bus"
-  kms_key_id = aws_kms_key.logs.arn
-}
-```
-
-The KMS key must grant CWL service permissions (`logs.amazonaws.com`):
-
-```json
-{
-  "Effect": "Allow",
-  "Principal": { "Service": "logs.<region>.amazonaws.com" },
-  "Action": ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*", "kms:ReEncrypt*", "kms:DescribeKey"],
-  "Resource": "*"
-}
-```
-
----
-
-## 19. Service Limits & Quotas
-
-| Limit | Default | Adjustable |
-|---|---|---|
-| Custom event buses per region | 100 | Yes |
-| Rules per event bus | 300 | Yes |
-| Targets per rule | 5 | Yes (up to 100) |
-| Event size | 256 KB | No |
-| PutEvents batch size | 10 entries | No |
-| Invocations per second (default bus) | 18,750 (equals 10,000 rules × 1.875) | Yes |
-| PutEvents throughput | 10,000 events/s | Yes |
-| Archives | 100 per region | Yes |
-| Concurrent replays | 1 | No |
-| Schema registries | 10 | Yes |
-| Schemas per registry | 100 | Yes |
-| Input transformer variables | 100 | No |
-| Input template characters | 8,192 | No |
-
----
-
-## 20. CloudWatch Metrics
-
-All EventBridge metrics are published to the `AWS/Events` namespace.
-
-### Rule & Bus Metrics
-
-| Metric | Dimensions | Description | Alert? |
-|---|---|---|---|
-| `MatchedEvents` | `RuleName`, `EventBusName` | Events matching the rule pattern | Informational |
-| `TriggeredRules` | `EventBusName` | Rules triggered at least once in the period | Informational |
-| `Invocations` | `RuleName`, `EventBusName` | Target invocation attempts | Informational |
-| `FailedInvocations` | `RuleName`, `EventBusName` | Invocations that failed after all retries | **Yes — critical** |
-| `ThrottledRules` | `EventBusName` | Rules throttled due to concurrent invocation limit | Yes |
-| `InvocationsSentToDLQ` | `EventBusName` `RuleName`, `TargetArn` | Events successfully sent to DLQ | Yes |
-| `InvocationsFailedToBeSentToDLQ` | `EventBusName` | Events that failed to reach DLQ (SILENT DROPS) | **Yes — critical** |
-| `DeadLetterInvocations` | `RuleName`, `EventBusName` | Alias for `InvocationsSentToDLQ` in older docs | — |
-
-### Schedule-Specific Metrics
-
-| Metric | Dimensions | Description |
-|---|---|---|
-| `ScheduledEventCount` | `ScheduleName` | Number of scheduled events triggered |
-| `ScheduledEventFailures` | `ScheduleName` | Failures for scheduled events |
-
-### Metrics Availability
-
-- Metrics are published with **1-minute granularity** and stored for 15 months.
-- Dimensions: can alarm at bus level (no `RuleName` dimension) or rule level (with `RuleName`).
-- Zero-data periods: if no events match a rule, `MatchedEvents` is not published (not zero). Use `treat_missing_data = "notBreaching"` for most alarms.
-
----
-
-## 21. Observability — Alarms
-
-### Recommended Alarm Set
-
-#### Per-Bus Alarms
-
-| Alarm | Metric | Threshold | Danger Level |
-|---|---|---|---|
-| Throttled rules | `ThrottledRules` | ≥ 1 | High |
-| DLQ deliveries | `InvocationsSentToDLQ` | ≥ 1 | Medium (events failing) |
-| DLQ unreachable | `InvocationsFailedToBeSentToDLQ` | ≥ 1 | **Critical (silent data loss)** |
-
-#### Per-Rule Alarms
-
-| Alarm | Metric | Threshold | Danger Level |
-|---|---|---|---|
-| Failed invocations | `FailedInvocations` | ≥ 1 | High |
-
-#### DLQ Alarms (SQS `AWS/SQS` namespace)
-
-| Alarm | Metric | Threshold | Notes |
-|---|---|---|---|
-| DLQ depth | `ApproximateNumberOfMessagesVisible` | ≥ 1 | Indicates events awaiting investigation |
-| DLQ message age | `ApproximateAgeOfOldestMessage` | > 3600 s | Events sitting unprocessed |
-
-### Terraform — Standard Alarm
-
+### CloudWatch Alarms
 ```hcl
 resource "aws_cloudwatch_metric_alarm" "failed_invocations" {
-  alarm_name          = "eb-failed-invocations-order-placed"
+  alarm_name          = "${var.app_name}-eventbridge-failed-invocations"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
   metric_name         = "FailedInvocations"
   namespace           = "AWS/Events"
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = 2
   period              = 60
   statistic           = "Sum"
-  threshold           = 1
+  threshold           = 0
   treat_missing_data  = "notBreaching"
 
   dimensions = {
-    EventBusName = "my-app-events"
-    RuleName     = "order-placed"
+    RuleName     = aws_cloudwatch_event_rule.this.name
+    EventBusName = aws_cloudwatch_event_bus.this.name
   }
 
-  alarm_actions = [aws_sns_topic.alerts.arn]
+  alarm_actions = [var.alert_sns_arn]
+  tags          = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "dlq_messages" {
+  alarm_name          = "${var.app_name}-eventbridge-dlq"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = { QueueName = aws_sqs_queue.event_dlq.name }
+  alarm_actions = [var.alert_sns_arn]
+  tags          = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "dead_letter_invocations" {
+  alarm_name          = "${var.app_name}-dlq-invocations"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "DeadLetterInvocations"
+  namespace           = "AWS/Events"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    RuleName     = aws_cloudwatch_event_rule.this.name
+    EventBusName = aws_cloudwatch_event_bus.this.name
+  }
+
+  alarm_actions = [var.alert_sns_arn]
+  tags          = var.tags
 }
 ```
 
-### Anomaly Detection Alarm
-
-Useful when you do not have a static baseline (bursty traffic patterns):
-
+### CloudWatch Dashboard
 ```hcl
-resource "aws_cloudwatch_metric_alarm" "invocations_anomaly" {
-  alarm_name          = "eb-invocations-anomaly"
-  comparison_operator = "LessThanLowerOrGreaterThanUpperThreshold"
-  evaluation_periods  = 2
-  threshold_metric_id = "ad1"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
+resource "aws_cloudwatch_dashboard" "eventbridge" {
+  dashboard_name = "${var.app_name}-eventbridge"
 
-  metric_query {
-    id          = "ad1"
-    expression  = "ANOMALY_DETECTION_BAND(m1, 2)"
-    label       = "Invocations anomaly band"
-    return_data = true
-  }
-
-  metric_query {
-    id          = "m1"
-    return_data = true
-    metric {
-      metric_name = "Invocations"
-      namespace   = "AWS/Events"
-      period      = 300
-      stat        = "Sum"
-      dimensions = {
-        EventBusName = "my-app-events"
-        RuleName     = "order-placed"
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "metric"
+        properties = {
+          title   = "Rule Invocations & Failures"
+          period  = 60
+          metrics = [
+            ["AWS/Events", "Invocations",       "RuleName", var.rule_name, "EventBusName", var.bus_name, { stat = "Sum" }],
+            ["AWS/Events", "FailedInvocations", "RuleName", var.rule_name, "EventBusName", var.bus_name, { stat = "Sum", color = "#d62728" }],
+            ["AWS/Events", "DeadLetterInvocations", "RuleName", var.rule_name, "EventBusName", var.bus_name, { stat = "Sum", color = "#ff7f0e" }],
+          ]
+        }
+      },
+      {
+        type = "metric"
+        properties = {
+          title   = "Matched Events"
+          period  = 60
+          metrics = [
+            ["AWS/Events", "MatchedEvents", "EventBusName", var.bus_name, { stat = "Sum" }],
+          ]
+        }
       }
+    ]
+  })
+}
+```
+
+---
+
+## 16. Observability — Logging
+
+### Log All Events to CloudWatch (Debugging)
+```hcl
+# Create a catch-all rule pointing to CloudWatch Logs
+resource "aws_cloudwatch_event_rule" "log_all" {
+  name           = "${var.app_name}-log-all"
+  description    = "Log all events for debugging (disable in production)"
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  state          = var.environment == "prod" ? "DISABLED" : "ENABLED"
+
+  event_pattern = jsonencode({ source = [{ "anything-but": [] }] })  # match everything
+  # OR simpler: event_pattern = "{}"  — matches all events
+}
+
+resource "aws_cloudwatch_event_target" "log_all" {
+  rule           = aws_cloudwatch_event_rule.log_all.name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "log-all-events"
+  arn            = aws_cloudwatch_log_group.event_log.arn
+}
+```
+
+### CloudWatch Logs Insights Queries
+```
+# Find all events from a specific source
+fields @timestamp, source, `detail-type`, detail
+| filter source = "com.myapp.orders"
+| sort @timestamp desc
+| limit 50
+
+# Count events by type over time
+fields @timestamp, `detail-type`
+| stats count() as eventCount by `detail-type`, bin(5min)
+| sort eventCount desc
+
+# Find events for a specific ID
+fields @timestamp, source, `detail-type`, detail.orderId
+| filter detail.orderId = "ORD-789"
+| sort @timestamp desc
+
+# Event rate per source
+stats count() as total by source
+| sort total desc
+
+# Failed events (if you log Lambda failures to CW)
+fields @timestamp, `detail-type`, detail.errorMessage
+| filter detail.errorMessage exists
+| sort @timestamp desc
+```
+
+### CloudTrail for EventBridge Control Plane
+```hcl
+# CloudTrail captures: PutRule, DeleteRule, PutTargets, RemoveTargets,
+# PutEvents (data event), CreateEventBus, DeleteEventBus
+resource "aws_cloudtrail" "eventbridge" {
+  # ... standard CloudTrail config
+
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+
+    # Data events for PutEvents calls
+    data_resource {
+      type   = "AWS::Events::EventBus"
+      values = [aws_cloudwatch_event_bus.this.arn]
     }
   }
 }
@@ -1115,421 +1899,572 @@ resource "aws_cloudwatch_metric_alarm" "invocations_anomaly" {
 
 ---
 
-## 22. Observability — Event Logging
+## 17. Observability — X-Ray
 
-The most powerful debugging tool: route ALL events from a bus to a CloudWatch Log Group via a catch-all rule.
+### EventBridge + X-Ray
+- EventBridge passes trace headers to targets automatically when X-Ray is enabled on the invoking Lambda.
+- End-to-end trace: `Lambda (producer) → EventBridge → Lambda (consumer)`.
+- EventBridge itself does not create X-Ray segments (unlike API GW).
 
-### Implementation
+```python
+# Producer Lambda — enable X-Ray, events get trace context propagated
+from aws_xray_sdk.core import xray_recorder, patch
+patch(["boto3"])
+
+def publish_order_event(order):
+    client = boto3.client("events")
+    # X-Ray automatically adds trace header to PutEvents call
+    client.put_events(Entries=[{
+        "EventBusName": os.environ["EVENT_BUS_NAME"],
+        "Source": "com.myapp.orders",
+        "DetailType": "OrderPlaced",
+        "Detail": json.dumps(order),
+    }])
+```
+
+### EventBridge Pipes X-Ray
+- Pipes support X-Ray tracing.
 
 ```hcl
-# 1. Log Group
-resource "aws_cloudwatch_log_group" "event_logs" {
-  name              = "/aws/events/my-app-events"
-  retention_in_days = 14
+resource "aws_pipes_pipe" "this" {
+  # ...
+  log_configuration {
+    cloudwatch_logs_log_destination {
+      log_group_arn = aws_cloudwatch_log_group.pipe.arn
+    }
+    level           = "INFO"    # "OFF", "ERROR", "INFO", "TRACE"
+    include_execution_data = ["ALL"]
+  }
+}
+```
+
+---
+
+## 18. Debugging & Troubleshooting
+
+### Common Issues
+
+| Problem | Cause | Resolution |
+|---|---|---|
+| Events not delivered | Rule pattern doesn't match | Use Event Pattern Tester in console; verify JSON escaping |
+| Events delivered but target fails | Target error / permissions | Check target CloudWatch Logs; check IAM |
+| Rule triggering but Lambda not invoked | Missing Lambda resource-based policy | Add `aws_lambda_permission` |
+| Cross-account events not received | Missing bus resource policy | Add `aws_cloudwatch_event_bus_policy` |
+| Events go to DLQ | Target consistently failing | Inspect DLQ message; fix target error |
+| Schedule not firing | Wrong cron expression / wrong timezone | Test cron in Scheduler console |
+| High latency | Target warm-up / downstream bottleneck | Check target metrics; consider provisioned concurrency |
+| Events lost silently | No DLQ configured + retries exhausted | Always configure DLQ on targets |
+| API Destination 401/403 | Auth config incorrect | Verify Connection credentials |
+| API Destination throttled (429) | `invocation_rate_limit_per_second` too high for endpoint | Reduce rate limit |
+
+### Test Event Pattern (AWS CLI)
+```bash
+# Test if a pattern matches a specific event
+aws events test-event-pattern \
+  --event-pattern '{"source":["com.myapp.orders"],"detail-type":["OrderPlaced"]}' \
+  --event '{
+    "source": "com.myapp.orders",
+    "detail-type": "OrderPlaced",
+    "detail": {"orderId": "ORD-789", "total": 99.99}
+  }'
+# Returns: { "Result": true/false }
+```
+
+### Send Test Event (AWS CLI)
+```bash
+aws events put-events \
+  --entries '[{
+    "EventBusName": "my-event-bus",
+    "Source": "com.myapp.orders",
+    "DetailType": "OrderPlaced",
+    "Detail": "{\"orderId\": \"ORD-TEST-001\", \"total\": 99.99, \"status\": \"PLACED\"}"
+  }]'
+```
+
+### List Rules and Targets
+```bash
+# List all rules on a bus
+aws events list-rules --event-bus-name my-bus
+
+# List targets for a rule
+aws events list-targets-by-rule \
+  --rule my-rule \
+  --event-bus-name my-bus
+
+# Describe a specific rule
+aws events describe-rule \
+  --name my-rule \
+  --event-bus-name my-bus
+
+# List all event buses
+aws events list-event-buses
+
+# Check archive
+aws events list-archives
+aws events describe-archive --archive-name my-archive
+```
+
+### Inspect DLQ Message
+```bash
+# Receive message from DLQ
+aws sqs receive-message \
+  --queue-url https://sqs.us-east-1.amazonaws.com/123456789012/my-event-dlq \
+  --max-number-of-messages 1 \
+  --attribute-names All
+
+# The message body contains the original event + error context
+```
+
+### Common Pattern Mistakes
+```json
+// ❌ WRONG: String instead of array value
+{ "source": "com.myapp.orders" }
+
+// ✅ CORRECT: Array of values (even for single value)
+{ "source": ["com.myapp.orders"] }
+
+// ❌ WRONG: No equals sign, just field name
+{ "detail": { "status" } }
+
+// ✅ CORRECT: Field = array of valid values
+{ "detail": { "status": ["PLACED", "CONFIRMED"] } }
+
+// ❌ WRONG: Nested AND inside array
+{ "source": ["com.myapp.orders", "com.myapp.users"] }
+// This is actually OR — either source matches (correct behavior)
+
+// ❌ WRONG: Using dot notation for detail-type field name in pattern
+{ "detail.orderId": ["ORD-789"] }
+
+// ✅ CORRECT: Nested JSON for nested fields
+{ "detail": { "orderId": ["ORD-789"] } }
+```
+
+---
+
+## 19. Cost Model
+
+### EventBridge Rules
+- **Custom/Partner events**: $1.00 per million events.
+- **AWS service events** (default bus): Free.
+- **Cross-region/cross-account**: charged in source region.
+- Schema discovery: $0.10 per million events ingested for discovery.
+
+### EventBridge Scheduler
+- **Scheduler invocations**: $1.00 per million invocations.
+- First 14,400,000 invocations per month free (always-free tier).
+- Flexible time windows: no additional cost.
+
+### EventBridge Pipes
+- **Events processed**: $0.40 per million events (source poll or enrichment counts as events).
+- Enrichment Lambda invocations billed separately.
+
+### Other Costs
+- **Schema registry storage**: $0.10 per schema per month.
+- **Archive storage**: $0.10 per GB per month.
+- **Replay**: $0.015 per GB replayed.
+- **API Destinations**: $0.20 per million invocations.
+
+### Cost Optimization
+- Use pattern filtering to reduce events flowing to targets (reduce Lambda invocations).
+- Use Scheduler instead of Lambda-based cron (cheaper at high schedule counts).
+- Enable schema discovery only when needed (has per-event cost).
+- Archive selectively — don't archive all events if storage cost is a concern.
+- Use `KEYS_ONLY` projection or filter inputs to reduce payload size.
+- Batch PutEvents calls (up to 10 events per call, cost is per event not per API call).
+
+---
+
+## 20. Limits & Quotas
+
+| Resource | Limit | Adjustable |
+|---|---|---|
+| Event buses per account/region | 100 | Yes |
+| Rules per event bus | 300 | Yes |
+| Targets per rule | 5 | No |
+| Event size | 256 KB | No |
+| PutEvents entries per call | 10 | No |
+| PutEvents total size per call | 256 KB | No |
+| `source` field length | 256 chars | No |
+| `detail-type` field length | 128 chars | No |
+| Input transformer input paths | 100 | No |
+| Input transformer output size | 8,192 chars | No |
+| Event pattern size | 4,096 chars | No |
+| Retry attempts (target) | 185 | No |
+| Maximum event age (target) | 86,400 sec (24 hr) | No |
+| Cross-account buses per policy | Unlimited | — |
+| Schedules per account | 1,000,000 | Yes |
+| Schedule groups | 500 | Yes |
+| Pipes per account | 1,000 | Yes |
+| API Destinations | 3,000 | Yes |
+| Connections | 3,000 | Yes |
+| Invocation rate per API Destination | 300/sec | Yes |
+| Archive retention | Unlimited (0 = infinite) | — |
+| Schema registries per account | 10 | Yes |
+| Schemas per registry | 1,000 | Yes |
+
+---
+
+## 21. Best Practices & Patterns
+
+### Event Design
+- Use **reverse-domain `source`** naming: `com.mycompany.service`.
+- Use **PascalCase** for `detail-type`: `OrderPlaced`, `PaymentFailed`.
+- Keep events **immutable facts** — something that happened, not commands.
+- Include **correlation IDs** in events for distributed tracing.
+- Version your events (`detail.schemaVersion = "1.0"`) for backward compatibility.
+- Don't put large payloads in events — use S3 reference pattern (Claim Check).
+
+### Event Pattern Design
+- Be **as specific as possible** in patterns to avoid spurious rule triggers.
+- Always include `source` in pattern to avoid matching unintended events.
+- Use `exists: false` to match events missing a field.
+- Test patterns with `test-event-pattern` before deploying.
+
+### Architecture Patterns
+
+#### Fanout (one event, many consumers)
+```
+OrderPlaced event
+  └─→ Rule 1: target = Lambda (send confirmation email)
+  └─→ Rule 2: target = SQS (inventory update queue)
+  └─→ Rule 3: target = Step Functions (fulfillment workflow)
+  └─→ Rule 4: target = Kinesis (analytics stream)
+```
+
+#### Event Router (content-based routing)
+```
+Payment event bus
+  └─→ Rule (amount > 10000): target = fraud-review Lambda
+  └─→ Rule (currency = "EUR"): target = EU-processing Lambda
+  └─→ Rule (method = "CARD"): target = card-processor Lambda
+```
+
+#### Claim Check Pattern (large payloads)
+```python
+# Instead of putting large data in event:
+def publish_large_event(data):
+    # 1. Store data in S3
+    key = f"events/{uuid.uuid4()}.json"
+    s3.put_object(Bucket=BUCKET, Key=key, Body=json.dumps(data))
+
+    # 2. Put lightweight event with reference
+    events_client.put_events(Entries=[{
+        "Source": "com.myapp.reports",
+        "DetailType": "ReportGenerated",
+        "Detail": json.dumps({
+            "s3Bucket": BUCKET,
+            "s3Key": key,
+            "reportType": "monthly",
+        })
+    }])
+```
+
+#### Saga Pattern (distributed transactions via events)
+```
+OrderPlaced → Lambda (reserve inventory)
+  → InventoryReserved → Lambda (charge payment)
+    → PaymentCharged → Lambda (schedule delivery)
+      → DeliveryScheduled → Lambda (send confirmation)
+
+Compensating events:
+  PaymentFailed → Lambda (release inventory)
+  DeliveryFailed → Lambda (refund payment + release inventory)
+```
+
+#### Event Aggregator (combine multiple events)
+- Use Step Functions with `.waitForTaskToken` to collect events.
+- Or use DynamoDB to accumulate events, trigger processing at threshold.
+
+### Operational Best Practices
+- Always configure **DLQ on every target** — events are silently dropped after retries without it.
+- Use **Archives** for all production buses — you'll want to replay eventually.
+- Enable **schema discovery** in early development to auto-generate schemas.
+- Set `state = "DISABLED"` on rules during maintenance, not delete.
+- Monitor `FailedInvocations` and `DeadLetterInvocations` metrics with alarms.
+- Tag all resources for cost attribution.
+- Use separate event buses per domain (orders, payments, users) not one global bus.
+- Log all events to CloudWatch Logs in development/staging; selective in production.
+
+---
+
+## 22. Terraform Full Resource Reference
+
+### Complete EventBridge Module
+
+```hcl
+##############################################
+# variables.tf
+##############################################
+variable "app_name"              { type = string }
+variable "environment"           { type = string }
+variable "enable_archive"        { default = true }
+variable "archive_retention_days"{ default = 30 }
+variable "enable_schema_discovery" { default = false }
+variable "log_retention_days"    { default = 7 }
+variable "alert_sns_arn"         { type = string }
+variable "lambda_processor_arn"  { type = string }
+variable "lambda_processor_name" { type = string }
+variable "sqs_target_arn"        { type = string }
+variable "tags"                  { default = {} }
+
+##############################################
+# main.tf
+##############################################
+
+# --- Event Bus ---
+resource "aws_cloudwatch_event_bus" "this" {
+  name = "${var.app_name}-${var.environment}"
+  tags = var.tags
 }
 
-# 2. Resource policy allowing EventBridge to write logs
-resource "aws_cloudwatch_log_resource_policy" "event_logs" {
-  policy_name = "eventbridge-to-cwl"
-  policy_document = jsonencode({
+# --- Bus Policy ---
+resource "aws_cloudwatch_event_bus_policy" "this" {
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+
+  policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "events.amazonaws.com" }
-      Action    = ["logs:CreateLogStream", "logs:PutLogEvents"]
-      Resource  = "${aws_cloudwatch_log_group.event_logs.arn}:*"
+      Sid    = "AllowAccountPublish"
+      Effect = "Allow"
+      Principal = { AWS = data.aws_caller_identity.current.arn }
+      Action   = "events:PutEvents"
+      Resource = aws_cloudwatch_event_bus.this.arn
     }]
   })
 }
 
-# 3. Catch-all rule
-resource "aws_cloudwatch_event_rule" "catch_all" {
-  name           = "catch-all-for-logging"
-  event_bus_name = aws_cloudwatch_event_bus.app.name
-  event_pattern  = jsonencode({ source = [{ prefix = "" }] })
+# --- Schema Discovery ---
+resource "aws_schemas_discoverer" "this" {
+  count       = var.enable_schema_discovery ? 1 : 0
+  source_arn  = aws_cloudwatch_event_bus.this.arn
+  description = "Schema discovery for ${var.app_name}"
+  tags        = var.tags
 }
 
-# 4. Target — CWL log group
-resource "aws_cloudwatch_event_target" "catch_all" {
-  rule           = aws_cloudwatch_event_rule.catch_all.name
-  event_bus_name = aws_cloudwatch_event_bus.app.name
-  target_id      = "cloudwatch-logs"
-  arn            = aws_cloudwatch_log_group.event_logs.arn
+# --- Archive ---
+resource "aws_cloudwatch_event_archive" "this" {
+  count            = var.enable_archive ? 1 : 0
+  name             = "${var.app_name}-${var.environment}-archive"
+  event_source_arn = aws_cloudwatch_event_bus.this.arn
+  retention_days   = var.archive_retention_days
 }
-```
 
-### Querying Logs
+# --- Log Group for Event Debugging ---
+resource "aws_cloudwatch_log_group" "events" {
+  name              = "/aws/events/${var.app_name}-${var.environment}"
+  retention_in_days = var.log_retention_days
+  tags              = var.tags
+}
 
-```
-# CloudWatch Logs Insights — find all OrderPlaced events in last hour
-fields @timestamp, source, `detail-type`, detail.orderId
-| filter `detail-type` = "OrderPlaced"
-| sort @timestamp desc
-| limit 50
-```
+resource "aws_cloudwatch_log_resource_policy" "events" {
+  policy_name = "eventbridge-logs-${var.app_name}"
+  policy_document = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = { Service = ["events.amazonaws.com", "delivery.logs.amazonaws.com"] }
+      Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+      Resource = "${aws_cloudwatch_log_group.events.arn}:*"
+    }]
+  })
+}
 
-```
-# Find failed delivery events (look for missing downstream calls)
-fields @timestamp, source, `detail-type`
-| filter source like /com.myapp.orders/
-| sort @timestamp desc
-```
+# --- DLQ ---
+resource "aws_sqs_queue" "dlq" {
+  name                      = "${var.app_name}-${var.environment}-event-dlq"
+  message_retention_seconds = 1209600  # 14 days
+  tags                      = var.tags
+}
 
-**Cost consideration:** Every event on the bus is written to CWL. For high-throughput buses this can be expensive. Use a filtered `event_pattern` on the catch-all rule to limit what is logged, or restrict to non-production environments.
-
----
-
-## 23. Observability — Dashboard
-
-A CloudWatch Dashboard provides a unified operational view across all bus metrics.
-
-### Recommended Widgets
-
-| Widget | Metrics | Purpose |
-|---|---|---|
-| MatchedEvents (per rule) | `MatchedEvents` by `RuleName` | Verify events are flowing |
-| Invocations (per rule) | `Invocations` by `RuleName` | Verify targets are being called |
-| FailedInvocations | `FailedInvocations` bus + per rule | Delivery health |
-| ThrottledRules | `ThrottledRules` | Throughput health |
-| DLQ depth | SQS `ApproximateNumberOfMessagesVisible` | Backlog check |
-| InvocationsSentToDLQ | `InvocationsSentToDLQ` | DLQ traffic |
-| InvocationsFailedToBeSentToDLQ | `InvocationsFailedToBeSentToDLQ` | **Silent drop detection** |
-
-### Terraform — `aws_cloudwatch_dashboard`
-
-```hcl
-resource "aws_cloudwatch_dashboard" "eventbridge" {
-  dashboard_name = "my-app-eventbridge"
-  dashboard_body = jsonencode({
-    widgets = [{
-      type   = "metric"
-      x = 0; y = 0; width = 12; height = 6
-      properties = {
-        title   = "MatchedEvents"
-        region  = "us-east-1"
-        stat    = "Sum"
-        period  = 60
-        metrics = [
-          ["AWS/Events", "MatchedEvents", "RuleName", "order-placed", "EventBusName", "app-events"]
-        ]
+resource "aws_sqs_queue_policy" "dlq" {
+  queue_url = aws_sqs_queue.dlq.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+      Action   = "sqs:SendMessage"
+      Resource = aws_sqs_queue.dlq.arn
+      Condition = {
+        ArnLike = { "aws:SourceArn" = "${aws_cloudwatch_event_bus.this.arn}" }
       }
     }]
   })
 }
-```
 
----
+# --- Example Rule: Order Events ---
+resource "aws_cloudwatch_event_rule" "order_placed" {
+  name           = "${var.app_name}-order-placed"
+  description    = "Route OrderPlaced events"
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  state          = "ENABLED"
 
-## 24. Debugging & Troubleshooting
+  event_pattern = jsonencode({
+    source      = ["com.${var.app_name}.orders"]
+    detail-type = ["OrderPlaced"]
+  })
 
-### Problem: Events published but rule not triggering
-
-1. **Check the event pattern** — Use the EventBridge Console → Event buses → "Send events" to test with a sample payload. The console provides a pattern tester.
-2. **Check `source` field** — AWS service events use `aws.` prefix. Custom events use your custom source. Pattern and event source must match exactly (case-sensitive).
-3. **Verify `event_bus_name`** — Rule and `PutEvents` call must reference the same bus.
-4. **Check `MatchedEvents` metric** — If zero, the event is not matching the pattern. If > 0 but `Invocations` is zero, there may be a target configuration issue.
-
-### Problem: Rule matches but Lambda not invoked
-
-1. **Check `aws_lambda_permission`** — Lambda resource-based policy must exist with `Principal = "events.amazonaws.com"` and `SourceArn` pointing to the rule ARN.
-2. **Check Lambda concurrency limits** — Throttling causes EventBridge to retry with backoff; monitor `ThrottledRules` metric.
-3. **Check Lambda function state** — Function must not be in failed/pending state.
-
-### Problem: `FailedInvocations` alarm firing
-
-1. Check the **DLQ** for the affected target — the `ERROR_CODE` attribute reveals the root cause.
-2. Check **CloudWatch Logs** for the Lambda function or target for application errors.
-3. Common error codes:
-   | `ERROR_CODE` | Meaning |
-   |---|---|
-   | `NO_PERMISSION` | EventBridge lacks permission to invoke target |
-   | `RESOURCE_NOT_FOUND` | Target resource deleted or wrong ARN |
-   | `THROTTLE` | Target is throttling EventBridge |
-   | `SDK_CLIENT_ERROR` | Network or SDK-level error |
-   | `BAD_ENDPOINT` | API destination URL unreachable |
-
-### Problem: Events silently dropped (`InvocationsFailedToBeSentToDLQ`)
-
-1. **DLQ does not exist** — queue was deleted after target was configured.
-2. **Missing SQS queue policy** — EventBridge cannot authenticate to send the message.
-3. **KMS key issue** — queue is encrypted; EventBridge lacks `kms:GenerateDataKey`.
-4. Resolution: Fix the DLQ, then replay from archive if one is configured.
-
-### Problem: Scheduled rule not firing
-
-1. **Schedule rules only work on the default bus** — verify `event_bus_name` is `default` or omitted.
-2. **Check rule state** — must be `ENABLED`.
-3. **Check `ScheduledEventCount` metric** — if it's firing but the target is not invoked, see the target troubleshooting steps above.
-4. **Cron timezone** — all times are UTC. Verify the hour matches your intended UTC time.
-
-### Testing Tools
-
-**EventBridge Console — Event pattern tester:**
-Console → EventBridge → Event buses → [bus] → "Test event pattern" — paste a sample event and pattern; immediately shows match/no-match.
-
-**AWS CLI — Send test event:**
-```bash
-aws events put-events --entries '[{
-  "Source": "test.source",
-  "DetailType": "TestEvent",
-  "Detail": "{\"key\": \"value\"}",
-  "EventBusName": "my-app-events"
-}]'
-```
-
-**EventBridge Sandbox (Console):**
-EventBridge → Sandbox — interactive environment to test event patterns and input transformers visually.
-
-**CloudWatch Logs Insights (with catch-all logging enabled):**
-```
-fields @timestamp, source, `detail-type`, @message
-| filter source = "com.myapp.orders"
-| sort @timestamp desc
-| limit 20
-```
-
-### Common Configuration Mistakes
-
-| Mistake | Effect | Fix |
-|---|---|---|
-| `event_bus_name` mismatch between rule and target | Target never receives events | Ensure rule and target reference same bus |
-| Missing `aws_lambda_permission` | Lambda silently not invoked; `FailedInvocations` fires | Add `aws_lambda_permission` for the rule ARN |
-| Schedule rule on custom bus | Rule created but never fires | Move schedule to `default` bus |
-| `input`, `input_path`, `input_transformer` all set | Terraform validation error | Use exactly one |
-| DLQ queue policy missing | DLQ receives no messages; `InvocationsFailedToBeSentToDLQ` | Add SQS resource policy |
-| KMS on DLQ without EventBridge key permissions | Same as above | Add `kms:GenerateDataKey` to key policy |
-| Overly broad event pattern (`{}`) | Every event on the bus triggers the rule | Scope pattern to `source` and `detail-type` |
-| `maximum_event_age_in_seconds < 60` | Terraform validation error | Minimum is 60 seconds |
-
----
-
-## 25. Terraform Resource Reference
-
-### Resources Used in This Module
-
-| Resource | Purpose | Terraform Docs |
-|---|---|---|
-| `aws_cloudwatch_event_bus` | Create custom event bus | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_event_bus) |
-| `aws_cloudwatch_event_rule` | Create event rule (pattern or schedule) | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_event_rule) |
-| `aws_cloudwatch_event_target` | Attach target to rule | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_event_target) |
-| `aws_lambda_permission` | Grant EventBridge invoke on Lambda | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_permission) |
-| `aws_cloudwatch_event_archive` | Archive events from a bus | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_event_archive) |
-| `aws_cloudwatch_event_bus_policy` | Resource-based policy on a bus | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_event_bus_policy) |
-| `aws_cloudwatch_metric_alarm` | CloudWatch alarms for metrics | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_metric_alarm) |
-| `aws_cloudwatch_log_group` | Log group for event logging | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_log_group) |
-| `aws_cloudwatch_log_resource_policy` | Allow EventBridge to write to CWL | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_log_resource_policy) |
-| `aws_cloudwatch_dashboard` | CloudWatch dashboard | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_dashboard) |
-
-### Related Resources (Not in Module — Reference)
-
-| Resource | Purpose | Terraform Docs |
-|---|---|---|
-| `aws_pipes_pipe` | EventBridge Pipes | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/pipes_pipe) |
-| `aws_scheduler_schedule` | EventBridge Scheduler | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/scheduler_schedule) |
-| `aws_scheduler_schedule_group` | Scheduler schedule group | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/scheduler_schedule_group) |
-| `aws_schemas_discoverer` | Schema Registry discoverer | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/schemas_discoverer) |
-| `aws_schemas_schema` | Schema definition | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/schemas_schema) |
-| `aws_schemas_registry` | Custom schema registry | [registry.terraform.io/...](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/schemas_registry) |
-
-### Key Argument Details
-
-#### `aws_cloudwatch_event_rule`
-
-```
-name                  string     required   Rule name, unique per bus
-event_bus_name        string     optional   Omit = default bus
-event_pattern         string     optional*  Mutually exclusive with schedule_expression
-schedule_expression   string     optional*  Mutually exclusive with event_pattern; default bus only
-state                 string     optional   ENABLED (default) | DISABLED
-description           string     optional
-role_arn              string     optional   Required if pattern must be evaluated with cross-account perms
-tags                  map        optional
-
-* exactly one must be set
-```
-
-#### `aws_cloudwatch_event_target`
-
-```
-rule             string     required   Rule name (not ARN)
-target_id        string     required   Unique ID within the rule, 1-64 chars
-arn              string     required   Target resource ARN
-event_bus_name   string     optional   Must match the rule's bus
-role_arn         string     optional   IAM role EventBridge assumes; not needed for Lambda
-input            string     optional*  Static JSON payload
-input_path       string     optional*  JSONPath expression
-input_transformer block     optional*  input_paths_map + input_template
-
-* at most one may be set
-
-dead_letter_config {
-  arn              string     required   SQS queue ARN
+  tags = var.tags
 }
 
-retry_policy {
-  maximum_event_age_in_seconds   number   60–86400
-  maximum_retry_attempts         number   0–185
-}
-```
+# --- Target: Lambda ---
+resource "aws_cloudwatch_event_target" "lambda" {
+  rule           = aws_cloudwatch_event_rule.order_placed.name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "lambda-processor"
+  arn            = var.lambda_processor_arn
 
-#### `aws_cloudwatch_event_archive`
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 3
+  }
 
-```
-name             string     required
-event_source_arn string     required   Source bus ARN
-event_pattern    string     optional   Filter; null = archive everything
-retention_days   number     optional   0 = indefinite (default)
-description      string     optional
-```
-
-#### `aws_cloudwatch_metric_alarm` (EventBridge-specific)
-
-```
-namespace    = "AWS/Events"
-
-# Key dimensions:
-dimensions = {
-  EventBusName = "my-app-events"  # required for most metrics
-  RuleName     = "order-placed"   # optional; omit for bus-level metrics
+  dead_letter_config {
+    arn = aws_sqs_queue.dlq.arn
+  }
 }
 
-# Key metrics:
-metric_name in [
-  "MatchedEvents",
-  "Invocations",
-  "FailedInvocations",
-  "ThrottledRules",
-  "TriggeredRules",
-  "InvocationsSentToDLQ",
-  "InvocationsFailedToBeSentToDLQ"
-]
+resource "aws_lambda_permission" "eventbridge" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = var.lambda_processor_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.order_placed.arn
+}
+
+# --- Target: Log All (dev/staging only) ---
+resource "aws_cloudwatch_event_rule" "log_all" {
+  count          = var.environment != "prod" ? 1 : 0
+  name           = "${var.app_name}-log-all"
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  state          = "ENABLED"
+  event_pattern  = jsonencode({})
+}
+
+resource "aws_cloudwatch_event_target" "log_all" {
+  count          = var.environment != "prod" ? 1 : 0
+  rule           = aws_cloudwatch_event_rule.log_all[0].name
+  event_bus_name = aws_cloudwatch_event_bus.this.name
+  target_id      = "log-all"
+  arn            = aws_cloudwatch_log_group.events.arn
+}
+
+# --- Scheduler ---
+resource "aws_scheduler_schedule_group" "this" {
+  name = "${var.app_name}-${var.environment}"
+  tags = var.tags
+}
+
+resource "aws_iam_role" "scheduler" {
+  name = "${var.app_name}-${var.environment}-scheduler"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "scheduler.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "scheduler" {
+  role = aws_iam_role.scheduler.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = [var.lambda_processor_arn, "${var.lambda_processor_arn}:*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.dlq.arn
+      }
+    ]
+  })
+}
+
+# --- Alarms ---
+resource "aws_cloudwatch_metric_alarm" "failed_invocations" {
+  alarm_name          = "${var.app_name}-eventbridge-failed"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "FailedInvocations"
+  namespace           = "AWS/Events"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    RuleName     = aws_cloudwatch_event_rule.order_placed.name
+    EventBusName = aws_cloudwatch_event_bus.this.name
+  }
+  alarm_actions = [var.alert_sns_arn]
+  tags          = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "dlq_depth" {
+  alarm_name          = "${var.app_name}-event-dlq-depth"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  dimensions          = { QueueName = aws_sqs_queue.dlq.name }
+  alarm_actions       = [var.alert_sns_arn]
+  tags                = var.tags
+}
+
+##############################################
+# outputs.tf
+##############################################
+output "event_bus_name"   { value = aws_cloudwatch_event_bus.this.name }
+output "event_bus_arn"    { value = aws_cloudwatch_event_bus.this.arn }
+output "dlq_arn"          { value = aws_sqs_queue.dlq.arn }
+output "dlq_url"          { value = aws_sqs_queue.dlq.url }
+output "log_group_name"   { value = aws_cloudwatch_log_group.events.name }
+output "archive_arn"      { value = var.enable_archive ? aws_cloudwatch_event_archive.this[0].arn : null }
+output "scheduler_group"  { value = aws_scheduler_schedule_group.this.name }
+output "scheduler_role_arn" { value = aws_iam_role.scheduler.arn }
 ```
 
 ---
 
-## 26. Best Practices & Patterns
+### Terraform Resource Quick Reference Table
 
-### Event Design
-
-- **Use reverse-domain `source` naming** — `com.mycompany.service`. Never reuse the `aws.` prefix.
-- **Use descriptive `detail-type`** — `OrderPlaced`, `UserRegistered`, `PaymentFailed`. Past-tense verb-noun convention.
-- **Include correlation IDs** in `detail` — `requestId`, `traceId`, `correlationId` for distributed tracing.
-- **Version your events explicitly** — add `detail.eventVersion = "1.0"` to enable forward-compatible schema evolution.
-- **Keep events small** — store large payloads in S3 and reference them by presigned URL or S3 path in the event. Saves cost and stays under the 256 KB limit.
-
-### Rule & Target Patterns
-
-- **One target type per rule** — avoids coupling unrelated consumers. Easier to manage permissions and retries independently.
-- **Scope event patterns tightly** — include `source`, `detail-type`, and key `detail` fields to avoid unintended rule matches.
-- **Name rules semantically** — `order-placed-process`, `user-registered-notify`. Avoid generic names like `rule-1`.
-- **Always configure DLQ on production targets** — no excuse for silent drops.
-- **Set `maximum_retry_attempts = 0` for idempotent-unsafe targets** — if the target cannot safely be called twice, drop on first failure and route straight to DLQ.
-
-### Security
-
-- **Scope `source_arn` in Lambda permissions** — use rule ARN, not bus ARN.
-- **Use IAM conditions on PutEvents** — restrict publishers to specific `events:source` values using `events:source` condition key.
-- **Enable SSE on custom buses** with customer-managed KMS for compliance workloads.
-- **Rotate and monitor cross-account bus policies** — audit with `aws events describe-event-bus` regularly.
-- **Never log raw events** to CWL if events contain PII — filter the catch-all pattern or obfuscate at target.
-
-### Reliability
-
-- **Archive all production buses** with at least 30 days retention — enables replay for incident recovery.
-- **Test replay periodically** — know before an incident that replay works correctly and targets are idempotent.
-- **Alarm on `InvocationsFailedToBeSentToDLQ`** — treat as P1; means events are silently dropped.
-- **Alarm on `ThrottledRules`** — indicates you need a concurrency limit increase.
-- **Monitor DLQ depth** — DLQ growth means events are failing and piling up.
-
-### Cost Optimisation
-
-- **Custom bus events vs default bus** — custom bus events cost $1/million. Default bus receives free AWS service events but custom events sent to it also cost $1/million.
-- **Disable event logging** (catch-all rule) in non-production after debugging sessions — CWL ingestion and storage cost adds up quickly.
-- **Filter archives** — archive only the subset of events you need to replay, not everything.
-- **Use Scheduler over Rules for cron** — if you have many (>50) fixed schedules, EventBridge Scheduler is more scalable and avoids the 300 rules/bus limit.
-
----
-
-## 27. This Module — Design Notes
-
-### Architecture Decisions
-
-| Decision | Rationale |
+| Resource | Purpose |
 |---|---|
-| `for_each` over `count` for all resources | Enables safe add/remove of individual buses, rules, and targets without destroying/recreating unrelated resources |
-| Composite key `bus:rule` and `bus:rule:target` | Provides globally unique, human-readable keys across the module; colons are prohibited in names to avoid key collisions |
-| `local.bus_name_map` | Abstracts whether a bus is module-managed or the default bus; rules and targets always reference the resolved name |
-| `create_lambda_permission` toggle per target | Allows consumers to manage their own `aws_lambda_permission` when this module does not own the Lambda |
-| `observability.enabled` master switch | Single toggle to activate or deactivate all observability resources, making it safe to disable in dev/test |
-| Default alarms auto-populated | Reduces configuration burden for common alarm patterns; users can override or supplement via `cloudwatch_metric_alarms` |
-| `InvocationsFailedToBeSentToDLQ` included in default alarms | This critical silent-drop metric is often missed; the module ensures it is always alarmed when observability is enabled |
-| Catch-all rule uses `{"source": [{"prefix": ""}]}` | Matches all events regardless of source, satisfying the EventBridge requirement for non-null patterns |
-| Dashboard name truncated at 243 chars with MD5 suffix | CloudWatch dashboard names have a 255-char limit; long bus name combinations are safely handled |
-
-### Module Inputs Quick Reference
-
-| Variable | Purpose |
-|---|---|
-| `event_buses` | All buses, rules, and targets (nested structure) |
-| `archives` | Event archives (separate from bus config for clean separation) |
-| `bus_policies` | Resource-based policies for cross-account access |
-| `observability` | Master switch + toggles for alarms, logging, dashboard |
-| `cloudwatch_metric_alarms` | Additional custom metric alarms (merged with auto-defaults) |
-| `dlq_cloudwatch_metric_alarms` | SQS DLQ alarms linked to targets via `target_key` |
-| `cloudwatch_metric_anomaly_alarms` | Anomaly detection alarms for dynamic thresholding |
-| `lambda_permission_statement_id_prefix` | Prefix for auto-generated Lambda permission statement IDs |
-| `tags` | Tags merged into all taggable resources |
-
-### Module Outputs Quick Reference
-
-| Output | Type | Key Format |
-|---|---|---|
-| `event_bus_arns` | `map(string)` | `bus_name` |
-| `event_bus_names` | `map(string)` | `bus_name` |
-| `event_rule_arns` | `map(string)` | `bus_name:rule_name` |
-| `event_rule_names` | `map(string)` | `bus_name:rule_name` |
-| `target_arns` | `map(string)` | `bus_name:rule_name:target_id` |
-| `lambda_permission_statement_ids` | `map(string)` | `bus_name:rule_name:target_id` |
-| `archive_arns` | `map(string)` | `archive_name` |
-| `bus_policy_ids` | `map(string)` | `bus_name` |
-| `cloudwatch_metric_alarm_arns` | `map(string)` | alarm key |
-| `dlq_cloudwatch_metric_alarm_arns` | `map(string)` | alarm key |
-| `anomaly_alarm_arns` | `map(string)` | alarm key |
-| `dashboard_name` | `string` | — |
-| `event_log_group_arns` | `map(string)` | `bus_name` |
-
-### Validation Guards Built Into the Module
-
-- Bus names unique and non-empty; no colons; valid characters only
-- Rule names unique per bus; no colons; exactly one of `event_pattern` / `schedule_expression`
-- `event_pattern` must be valid JSON when set
-- `schedule_expression` must match `rate(...)` or `cron(...)`; only on default bus
-- Target IDs unique per rule; no colons; non-empty
-- `input`, `input_path`, `input_transformer` mutually exclusive per target
-- Target ARNs start with `arn:`; `role_arn` format validated; `dead_letter_arn` format validated
-- `retry_policy` values within allowed ranges (60–86400 and 0–185)
-- `lambda_permission_statement_id` format: 1-100 chars, alphanumeric + `-_`
-- Observability: SNS ARNs validated; `event_log_retention_in_days` must be a valid CWL retention value; KMS ARN format validated
-- `cloudwatch_metric_alarms.comparison_operator` must be a valid CW operator
-- `cloudwatch_metric_alarms.rule_key` must follow `bus_name:rule_name` format
-- Anomaly alarm `band_width > 0` and `evaluation_periods >= 1`
+| `aws_cloudwatch_event_bus` | Custom event bus |
+| `aws_cloudwatch_event_bus_policy` | Resource policy for cross-account publish |
+| `aws_cloudwatch_event_rule` | Pattern-matching rule on event bus |
+| `aws_cloudwatch_event_target` | Target for a rule (Lambda, SQS, SNS, SFN, etc.) |
+| `aws_cloudwatch_event_archive` | Archive events for replay |
+| `aws_cloudwatch_event_connection` | Auth config for API Destinations |
+| `aws_cloudwatch_event_api_destination` | External HTTP endpoint target |
+| `aws_cloudwatch_event_permission` | (Legacy) cross-account rule access |
+| `aws_scheduler_schedule` | One-time or recurring schedule |
+| `aws_scheduler_schedule_group` | Logical group of schedules |
+| `aws_pipes_pipe` | Source → [filter] → [enrichment] → target pipe |
+| `aws_schemas_discoverer` | Auto-discover schemas from event bus |
+| `aws_schemas_registry` | Schema registry |
+| `aws_schemas_schema` | Individual event schema |
+| `aws_lambda_permission` | Allow EventBridge to invoke Lambda |
+| `aws_sqs_queue_policy` | Allow EventBridge to send to SQS |
+| `aws_sns_topic_policy` | Allow EventBridge to publish to SNS |
+| `aws_iam_role` | EventBridge execution role (for SFN, Kinesis, ECS targets) |
+| `aws_iam_role_policy` | Policy on EventBridge role |
+| `aws_cloudwatch_log_group` | Log group for event logging target |
+| `aws_cloudwatch_log_resource_policy` | Allow EventBridge to write to CW Logs |
+| `aws_cloudwatch_metric_alarm` | Failed invocations, DLQ depth alarms |
+| `aws_cloudwatch_dashboard` | Operational dashboard |
 
 ---
 
-## References
-
-- [AWS EventBridge User Guide](https://docs.aws.amazon.com/eventbridge/latest/userguide/)
-- [AWS EventBridge API Reference](https://docs.aws.amazon.com/eventbridge/latest/APIReference/)
-- [EventBridge event patterns](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-event-patterns.html)
-- [EventBridge Pipes](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-pipes.html)
-- [EventBridge Scheduler](https://docs.aws.amazon.com/scheduler/latest/UserGuide/)
-- [EventBridge Schema Registry](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-schema.html)
-- [Terraform: aws_cloudwatch_event_bus](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_event_bus)
-- [Terraform: aws_cloudwatch_event_rule](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_event_rule)
-- [Terraform: aws_cloudwatch_event_target](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_event_target)
-- [Terraform: aws_cloudwatch_event_archive](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_event_archive)
-- [Terraform: aws_pipes_pipe](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/pipes_pipe)
-- [Terraform: aws_scheduler_schedule](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/scheduler_schedule)
-- [Terraform: aws_schemas_discoverer](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/schemas_discoverer)
-- [CloudWatch EventBridge metrics](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-monitoring.html)
-- [EventBridge quotas](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-quota.html)
+*Last updated: February 2026*
+*Next: SQS, Step Functions, ECS/Fargate, RDS, ElastiCache, S3, CloudFront*

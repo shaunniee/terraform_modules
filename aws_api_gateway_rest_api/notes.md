@@ -1,713 +1,2243 @@
-# AWS API Gateway — Complete Engineering Notes (Terraform-Centric)
-
-> Deep reference notes for day-to-day cloud engineering and Terraform implementation.
-> Covers core architecture, security, integrations, release patterns, observability, debugging, and cost.
+# AWS API Gateway — Complete Engineering Reference Notes
+> For use inside Terraform modules. Covers REST API (v1), HTTP API (v2), WebSocket API — every detail, feature, config, and Terraform resource reference.
 
 ---
 
 ## Table of Contents
 
-1. [Service Scope and API Types](#1-service-scope-and-api-types)
-2. [Core Architecture and Request Lifecycle](#2-core-architecture-and-request-lifecycle)
-3. [REST API Building Blocks](#3-rest-api-building-blocks)
-4. [Endpoint Types and Network Topology](#4-endpoint-types-and-network-topology)
-5. [AuthN/AuthZ and Access Control](#5-authnauthz-and-access-control)
-6. [Request Validation, Mapping, and Transformation](#6-request-validation-mapping-and-transformation)
-7. [Integration Types and Backend Patterns](#7-integration-types-and-backend-patterns)
-8. [Errors, Gateway Responses, and Client Experience](#8-errors-gateway-responses-and-client-experience)
-9. [Deployments, Stages, Versioning, and Release Strategies](#9-deployments-stages-versioning-and-release-strategies)
-10. [Performance, Throttling, Caching, and Limits](#10-performance-throttling-caching-and-limits)
-11. [Custom Domains, TLS, DNS, and Edge Considerations](#11-custom-domains-tls-dns-and-edge-considerations)
-12. [Security Hardening and Compliance Controls](#12-security-hardening-and-compliance-controls)
-13. [Observability: Logs, Metrics, Traces, and Alarms](#13-observability-logs-metrics-traces-and-alarms)
-14. [Debugging and Troubleshooting Playbook](#14-debugging-and-troubleshooting-playbook)
-15. [Cost Model and Optimization](#15-cost-model-and-optimization)
-16. [Important Quotas and Service Limits](#16-important-quotas-and-service-limits)
-17. [Terraform Reference: API Gateway (REST v1 + Related)](#17-terraform-reference-api-gateway-rest-v1--related)
-18. [This Module: Feature Mapping and Design Notes](#18-this-module-feature-mapping-and-design-notes)
-19. [Production Readiness Checklist](#19-production-readiness-checklist)
+1. [Core Concepts & API Types](#1-core-concepts--api-types)
+2. [HTTP API (v2) — Deep Dive](#2-http-api-v2--deep-dive)
+3. [REST API (v1) — Deep Dive](#3-rest-api-v1--deep-dive)
+4. [WebSocket API — Deep Dive](#4-websocket-api--deep-dive)
+5. [Integrations](#5-integrations)
+6. [Authorizers & Authentication](#6-authorizers--authentication)
+7. [Request / Response Transformation](#7-request--response-transformation)
+8. [Stages & Deployments](#8-stages--deployments)
+9. [Custom Domains & TLS](#9-custom-domains--tls)
+10. [Throttling & Usage Plans](#10-throttling--usage-plans)
+11. [CORS](#11-cors)
+12. [Caching](#12-caching)
+13. [Private APIs (VPC)](#13-private-apis-vpc)
+14. [Canary Deployments](#14-canary-deployments)
+15. [Mutual TLS (mTLS)](#15-mutual-tls-mtls)
+16. [WAF Integration](#16-waf-integration)
+17. [Observability — Access Logging](#17-observability--access-logging)
+18. [Observability — Execution Logging](#18-observability--execution-logging)
+19. [Observability — Metrics & Alarms](#19-observability--metrics--alarms)
+20. [Observability — X-Ray Tracing](#20-observability--x-ray-tracing)
+21. [Debugging & Troubleshooting](#21-debugging--troubleshooting)
+22. [Cost Model](#22-cost-model)
+23. [Limits & Quotas](#23-limits--quotas)
+24. [Security Best Practices](#24-security-best-practices)
+25. [Terraform Full Resource Reference](#25-terraform-full-resource-reference)
 
 ---
 
-## 1. Service Scope and API Types
+## 1. Core Concepts & API Types
 
-API Gateway has three API families:
+### Three API Types
 
-| API Family | Terraform Namespace | Best For | Notes |
+| Feature | HTTP API (v2) | REST API (v1) | WebSocket API |
 |---|---|---|---|
-| REST API (v1) | `aws_api_gateway_*` | Full feature set, legacy and enterprise controls | Most configurable; higher cost and more moving parts |
-| HTTP API (v2) | `aws_apigatewayv2_*` | Lower-cost low-latency proxy APIs | Fewer features than REST API |
-| WebSocket API (v2) | `aws_apigatewayv2_*` | Bi-directional persistent connections | Route-based message handling |
+| Protocol | HTTP/HTTPS | HTTP/HTTPS | WebSocket |
+| Latency | ~6ms p50 | ~10ms p50 | N/A |
+| Cost | ~70% cheaper than REST | Standard | Standard |
+| Payload format | 1.0 or 2.0 | 1.0 | 1.0 |
+| Lambda proxy | ✅ | ✅ | ✅ |
+| Custom authorizers | ✅ JWT + Lambda | ✅ Lambda only | ✅ Lambda only |
+| JWT authorizer | ✅ Native | ❌ | ❌ |
+| Usage plans / API keys | ❌ | ✅ | ❌ |
+| Request/response transform | ❌ | ✅ (mapping templates) | ❌ |
+| Response caching | ❌ | ✅ | ❌ |
+| Private APIs | ❌ | ✅ | ❌ |
+| VPC Link | ✅ (NLB/ALB/Cloud Map) | ✅ (NLB only) | ❌ |
+| mTLS | ✅ | ✅ | ❌ |
+| WAF | ✅ | ✅ | ❌ |
+| Custom domain | ✅ | ✅ | ✅ |
+| Edge-optimized | ❌ | ✅ | ❌ |
+| Regional | ✅ | ✅ | ✅ |
+| X-Ray tracing | ✅ | ✅ | ❌ |
+| Terraform resource | `aws_apigatewayv2_*` | `aws_api_gateway_*` | `aws_apigatewayv2_*` |
 
-This module implements **REST API (v1)**. Most notes below are REST-focused, with explicit callouts where behavior differs across API types.
+### When to Choose Which
+- **HTTP API**: Default choice. Simpler, faster, cheaper. Use when you don't need usage plans, caching, edge-optimized, or VTL transforms.
+- **REST API**: When you need API keys + usage plans, request/response mapping templates, edge-optimized CDN distribution, private VPC-only APIs, or response caching.
+- **WebSocket API**: Real-time bidirectional communication (chat, live dashboards, gaming, notifications).
 
----
-
-## 2. Core Architecture and Request Lifecycle
-
-### High-Level Request Path (REST API)
-
-1. Client sends HTTPS request to execute-api endpoint or custom domain.
-2. API Gateway resolves stage + resource path + method.
-3. Request auth and policy checks run (IAM/Cognito/Lambda authorizer/API key/WAF if configured).
-4. Request validator and model validation run (if configured).
-5. Method request transforms to integration request (VTL templates / parameter mappings).
-6. Backend integration executes (Lambda/HTTP/AWS service/MOCK).
-7. Integration response maps to method response.
-8. Stage and gateway response behaviors apply.
-9. Access logs, execution logs, metrics, and optional X-Ray are emitted.
-
-### Control Plane vs Data Plane
-
-- **Control plane**: create API resources, methods, integrations, deployments, stages.
-- **Data plane**: live request execution against deployed stage.
-- Important: changes to resources/methods/integrations are not live until a new deployment is associated to a stage.
-
----
-
-## 3. REST API Building Blocks
-
-### Core Entities
-
-| Entity | Purpose | Terraform |
-|---|---|---|
-| REST API | API container and global options | `aws_api_gateway_rest_api` |
-| Resource | Path segment (`/orders/{id}`) | `aws_api_gateway_resource` |
-| Method | HTTP verb + auth + request config | `aws_api_gateway_method` |
-| Integration | Backend target + mapping | `aws_api_gateway_integration` |
-| Method Response | Declares expected client response status/model | `aws_api_gateway_method_response` |
-| Integration Response | Maps backend result to method response | `aws_api_gateway_integration_response` |
-| Deployment | Immutable snapshot of API config | `aws_api_gateway_deployment` |
-| Stage | Live environment pointer to deployment | `aws_api_gateway_stage` |
-
-### Method Concepts
-
-- Method-level controls:
-  - Authorization mode (`NONE`, `AWS_IAM`, `CUSTOM`, `COGNITO_USER_POOLS`)
-  - API key required flag
-  - Request parameters and request models
-  - Request validator assignment
-- `ANY` is supported but requires careful backend handling and explicit observability dimensions.
+### Request Flow
+```
+Client
+  └─→ CloudFront (edge-optimized) or Regional Endpoint
+        └─→ API Gateway
+              ├─→ Authorizer (Lambda / Cognito / JWT)
+              ├─→ WAF (if attached)
+              ├─→ Throttle check
+              ├─→ Cache check (REST only)
+              ├─→ Request mapping (REST only)
+              ├─→ Integration (Lambda / HTTP / VPC Link / Mock / AWS Service)
+              ├─→ Response mapping (REST only)
+              └─→ Client Response
+```
 
 ---
 
-## 4. Endpoint Types and Network Topology
+## 2. HTTP API (v2) — Deep Dive
 
-### Endpoint Types
-
-| Type | Characteristics | Typical Use |
-|---|---|---|
-| `REGIONAL` | Regional endpoint, recommended default | Most workloads |
-| `EDGE` | CloudFront-managed edge-optimized endpoint | Global client distribution without self-managed CDN |
-| `PRIVATE` | Reachable via VPC interface endpoint (PrivateLink) | Internal APIs in private networks |
-
-### Network Patterns
-
-- Public API with WAF + custom domain.
-- Private API with resource policy restricting `aws:SourceVpce`.
-- VPC Link integration for private NLB-backed services.
-
-### Private API Notes
-
-- Requires API resource policy for least-privilege access.
-- Typically paired with route-level IAM auth and centralized VPC endpoint strategy.
-- Validate DNS and endpoint policies to avoid accidental broad access.
-
----
-
-## 5. AuthN/AuthZ and Access Control
-
-### Authorization Modes
-
-| Mode | What It Does | Key Terraform |
-|---|---|---|
-| `NONE` | No built-in authorization | `aws_api_gateway_method.authorization` |
-| `AWS_IAM` | SigV4 request signing + IAM policy evaluation | method auth + IAM policies |
-| `CUSTOM` | Lambda authorizer (`TOKEN` or `REQUEST`) | `aws_api_gateway_authorizer` |
-| `COGNITO_USER_POOLS` | JWT validation via Cognito User Pool | `aws_api_gateway_authorizer` with provider ARNs |
-
-### Lambda Authorizer Deep Notes
-
-- `TOKEN`: single token source (usually `Authorization` header).
-- `REQUEST`: can use headers, query params, stage vars, and context.
-- Caching (`authorizer_result_ttl_in_seconds`) reduces latency/cost but requires revocation strategy.
-- Policy document size and principal context size constraints matter for large custom claims.
-
-### API Keys and Usage Plans
-
-- REST API supports API key checks per method.
-- API key value itself is not auth; pair with IAM/Cognito/authorizer for secure access.
-- Usage plans enforce request-rate quotas per API key.
-- Terraform references:
-  - `aws_api_gateway_api_key`
-  - `aws_api_gateway_usage_plan`
-  - `aws_api_gateway_usage_plan_key`
-
-### Resource Policies
-
-- Resource-based policy on REST API controls who can invoke the API (cross-account, VPC endpoint, CIDR).
-- Useful for PRIVATE APIs and explicit principal whitelisting.
-- Terraform: set `policy` on `aws_api_gateway_rest_api`.
-
----
-
-## 6. Request Validation, Mapping, and Transformation
-
-### Validation
-
-- Request validators can validate:
-  - body only
-  - parameters only
-  - both
-- Request models define schema expectations by content type.
-- Validation failure returns `400` before integration is called.
-
-Terraform:
-- `aws_api_gateway_request_validator`
-- `aws_api_gateway_method.request_models`
-- `aws_api_gateway_method.request_parameters`
-
-### VTL Templates and Parameter Mapping
-
-- Request templates transform method request payload into integration format.
-- Response templates transform integration response into client format.
-- Mapping supports `$input`, `$context`, `$util` functions.
-- Keep templates deterministic and small; large templates are hard to debug.
-
-### Binary Media Types and Content Handling
-
-- Configure binary media types at API level.
-- Use `content_handling` for conversion where required.
-- Binary support must align with client `Accept` / `Content-Type` behavior and backend encoding.
-
-### Compression
-
-- `minimum_compression_size` controls payload compression threshold.
-- Improves bandwidth usage but can increase CPU/latency for tiny responses.
-
----
-
-## 7. Integration Types and Backend Patterns
-
-### Integration Types
-
-| Integration Type | Description | Common Use |
-|---|---|---|
-| `AWS_PROXY` | Lambda proxy event passthrough | Most Lambda-backed APIs |
-| `AWS` | Non-proxy AWS service integration | SQS/SNS/StepFunctions direct calls |
-| `HTTP_PROXY` | Pass-through to HTTP backend | Existing microservices |
-| `HTTP` | Non-proxy HTTP with mapping templates | Protocol adaptation |
-| `MOCK` | Static response for testing/fallback | Health and contract tests |
-
-### Lambda Proxy (`AWS_PROXY`)
-
-- Fastest to implement; backend owns status code/body/headers.
-- Requires Lambda permission with execute-api source ARN.
-- Recommended for most greenfield REST APIs.
-
-### Non-Proxy Integrations (`AWS`, `HTTP`)
-
-- Enable strict contract control via request/response templates.
-- Better for protocol translation or legacy backend normalization.
-- More operational overhead due to mapping complexity.
-
-### VPC Link
-
-- For private HTTP integrations through NLB.
-- Requires `connection_type = "VPC_LINK"` and `connection_id`.
-- Monitor integration latency and backend timeout carefully.
-
-### Timeout and Retries
-
-- Integration timeout max is bounded (module validates 50–29000 ms).
-- API Gateway itself does not provide general backend retry semantics for all integration types.
-- Design idempotent backends and explicit retry behavior in callers where needed.
-
----
-
-## 8. Errors, Gateway Responses, and Client Experience
-
-### Error Layers
-
-1. AuthN/AuthZ errors (401/403)
-2. Validation errors (400)
-3. Integration invocation errors (5xx, timeout)
-4. Mapping/template errors (5xx)
-5. Throttling/quota (`429`)
-
-### Gateway Responses
-
-- Customize standard responses such as:
-  - `DEFAULT_4XX`, `DEFAULT_5XX`
-  - `UNAUTHORIZED`, `ACCESS_DENIED`
-  - `THROTTLED`, `QUOTA_EXCEEDED`
-  - `INTEGRATION_TIMEOUT`, `INTEGRATION_FAILURE`
-- Used to standardize error bodies/headers (e.g., correlation IDs, JSON error envelope).
-
-Terraform: `aws_api_gateway_gateway_response`.
-
-### CORS
-
-- For REST API, CORS is not one toggle; configure per-resource/per-method.
-- Usually requires:
-  - `OPTIONS` method
-  - appropriate method/integration response headers
-  - backend-provided CORS headers for proxy integrations
-
----
-
-## 9. Deployments, Stages, Versioning, and Release Strategies
-
-### Deployment Model
-
-- `aws_api_gateway_deployment` captures a point-in-time API configuration.
-- `aws_api_gateway_stage` points traffic to one deployment.
-- Redeployment trigger strategy is crucial in Terraform to avoid stale deployments.
-
-### Stage Features
-
-- Stage variables for environment-specific behavior.
-- Stage cache cluster toggles.
-- Method settings across `*/*` or specific method paths.
-- X-Ray enablement and access logs at stage scope.
-
-### Recommended Release Patterns
-
-- **Blue/Green via stages**: `v1` / `v2`, then swap custom domain base path mapping.
-- **Canary** (REST stage supports canary settings): gradual traffic shift.
-- **Immutable deployments** with deterministic redeployment hash in Terraform.
-
----
-
-## 10. Performance, Throttling, Caching, and Limits
-
-### Throttling Layers
-
-- Account-level regional limits.
-- Stage/method throttling via method settings (`burst` and `rate`).
-- Usage plan throttling/quota for API-key consumers.
-
-### Caching
-
-- Stage cache cluster improves read latency and backend offload.
-- Method settings can enable/disable caching and TTL.
-- Cache invalidation strategy is mandatory for mutable resources.
-
-### Latency Metrics to Track
-
-- `Latency`: end-to-end API Gateway latency.
-- `IntegrationLatency`: backend-only latency.
-- Gap between them shows API Gateway overhead (mapping, auth, etc.).
-
-### Payload and Mapping Considerations
-
-- Large payloads and heavy VTL increase latency/cost.
-- Prefer proxy integrations when transformation is minimal.
-
----
-
-## 11. Custom Domains, TLS, DNS, and Edge Considerations
-
-### Custom Domains
-
-- Use `aws_api_gateway_domain_name` + `aws_api_gateway_base_path_mapping`.
-- For DNS, alias A record to API Gateway domain target.
-- Regional vs Edge endpoint behavior impacts certificate region requirements.
-
-### TLS and Security Policy
-
-- Enforce modern TLS policy (`TLS_1_2` preferred).
-- If required by legacy clients, explicitly document downgrade risk.
-
-### Mutual TLS (mTLS)
-
-- Supported for custom domains in REST APIs (regional).
-- Requires truststore configuration in S3.
-- Terraform support is available on domain resources (provider-version dependent fields).
-
----
-
-## 12. Security Hardening and Compliance Controls
-
-### Baseline Hardening
-
-- Disable default execute-api endpoint when using custom domains (`disable_execute_api_endpoint = true`) if architecture allows.
-- Apply least-privilege IAM for invoke and management actions.
-- Restrict PRIVATE API by VPC endpoint policy + API resource policy.
-- Attach WAFv2 for L7 protections on public APIs.
-- Avoid sensitive data in query strings or logs.
-
-### Data Protection
-
-- TLS in transit is mandatory.
-- Encrypt access logs in CloudWatch with KMS where required.
-- Use tokenization/redaction patterns in logging and templates.
-
-### Governance
-
-- Standard tagging across API/stage/log groups.
-- Separate accounts/stages by environment (dev/stage/prod).
-- Track configuration drift and enforce via CI checks.
-
----
-
-## 13. Observability: Logs, Metrics, Traces, and Alarms
-
-### Logging Types (REST)
-
-| Log Type | Purpose | Where Configured |
-|---|---|---|
-| Access Logs | One structured line per request | Stage `access_log_settings` |
-| Execution Logs | Internal execution details | Method/stage logging settings + API Gateway account CW role |
-
-### Access Log Best Practices
-
-- Use JSON format.
-- Include: request ID, extended request ID, source IP, method, path, status, protocol, response length, integration latency.
-- Add correlation IDs from incoming headers where possible.
-
-### CloudWatch Metrics (Key)
-
-- `Count`
-- `4XXError`
-- `5XXError`
-- `Latency`
-- `IntegrationLatency`
-- `CacheHitCount`, `CacheMissCount` (when caching enabled)
-
-Dimensions commonly used:
-- `ApiName`
-- `Stage`
-- `Method`
-- `Resource`
-
-### Tracing (X-Ray)
-
-- Enable on stage (`xray_tracing_enabled`).
-- Requires account-level API Gateway CloudWatch/X-Ray role permissions.
-- Provides service map and segment-level latency breakdown.
-
-### Alarm Strategy
-
-Minimum recommended alarms:
-
-1. High `5XXError` sum
-2. Elevated `4XXError` sum (context-aware threshold)
-3. High `Latency` p95
-4. High `IntegrationLatency`
-5. Zero traffic anomaly (optional for critical APIs)
-
----
-
-## 14. Debugging and Troubleshooting Playbook
-
-### Fast Triage Sequence
-
-1. Confirm stage deployment is current.
-2. Check access logs for request ID and status pattern.
-3. Check execution logs for mapping/auth/integration failures.
-4. Compare `Latency` vs `IntegrationLatency`.
-5. Check backend logs (Lambda/ALB/service).
-6. Validate IAM/resource policy/authorizer decisions.
-
-### Common Failure Signatures
-
-| Symptom | Likely Cause | Checks |
-|---|---|---|
-| `403 Missing Authentication Token` | Wrong path/stage/method; custom domain mapping mismatch | Verify base path mapping and route exists |
-| `401 Unauthorized` | Authorizer/token issue | Authorizer identity source, token validity, TTL cache |
-| `403 Forbidden` | IAM deny/resource policy/WAF block | IAM policy simulation, API policy, WAF logs |
-| `429 Too Many Requests` | Throttle/quota exceeded | Account, stage, usage plan throttles |
-| `500 Internal Server Error` | Mapping template/runtime integration issue | Execution logs + integration response mapping |
-| `504 Integration Timeout` | Backend exceeded timeout | Integration timeout + backend latency |
-
-### Mapping Template Debug Tips
-
-- Validate JSON syntax independently.
-- Use explicit defaults for missing fields.
-- Minimize branching in templates.
-- Log request IDs and key context variables to correlate failures.
-
-### Deployment Drift Pitfall
-
-- Terraform updates to methods/integrations without deployment trigger updates can leave stage stale.
-- Ensure deployment trigger includes all behavior-affecting objects.
-
----
-
-## 15. Cost Model and Optimization
-
-Cost drivers for REST API:
-
-- API requests (per million requests)
-- Data transfer out
-- Caching (if enabled)
-- Custom domain and edge/CloudFront-related transfer behavior
-- CloudWatch logs ingestion/storage
-- X-Ray traces
-
-Optimization levers:
-
-- Move simple high-volume endpoints to HTTP API (if features fit).
-- Reduce payload size and compress responses.
-- Use efficient authorizer caching and backend latency optimization.
-- Tune log verbosity; keep INFO/data trace for non-prod or temporary incident windows.
-
----
-
-## 16. Important Quotas and Service Limits
-
-Quotas vary by region/account and can change; always verify via **Service Quotas** and API Gateway docs.
-
-Operationally important limit classes:
-
-- API count per region/account
-- Resources and methods per API
-- Authorizers and models per API
-- Stage names and variables constraints
-- Integration timeout bounds
-- Request/response payload size bounds
-- Account-level request rate/burst limits
-
-Rule: treat defaults as starting points and request quota increases ahead of scale events.
-
----
-
-## 17. Terraform Reference: API Gateway (REST v1 + Related)
-
-### Core REST API Resources
-
-| Terraform Resource | What It Manages |
-|---|---|
-| `aws_api_gateway_rest_api` | API container, endpoint config, binary media, compression, policy |
-| `aws_api_gateway_resource` | Path tree segments |
-| `aws_api_gateway_method` | HTTP method settings, auth, request model/params |
-| `aws_api_gateway_integration` | Backend integration and request mapping |
-| `aws_api_gateway_method_response` | Method response declarations |
-| `aws_api_gateway_integration_response` | Integration-to-method response mapping |
-| `aws_api_gateway_request_validator` | Request validation behavior |
-| `aws_api_gateway_model` | JSON schema models |
-| `aws_api_gateway_gateway_response` | Global default error responses |
-| `aws_api_gateway_deployment` | Deployable immutable snapshot |
-| `aws_api_gateway_stage` | Runtime stage config |
-| `aws_api_gateway_method_settings` | Logging/metrics/throttle/cache settings |
-| `aws_api_gateway_account` | Account-level CloudWatch role association |
-
-### Security and Access Related
-
-| Terraform Resource | Use |
-|---|---|
-| `aws_api_gateway_authorizer` | Lambda/Cognito authorizers |
-| `aws_api_gateway_api_key` | API keys |
-| `aws_api_gateway_usage_plan` | Quotas/throttle plan |
-| `aws_api_gateway_usage_plan_key` | API key attachment to usage plan |
-| `aws_wafv2_web_acl_association` | Stage-level WAF attachment |
-| `aws_lambda_permission` | Permit API Gateway to invoke Lambda |
-
-### Domain and DNS
-
-| Terraform Resource | Use |
-|---|---|
-| `aws_api_gateway_domain_name` | Custom domain and certificate binding |
-| `aws_api_gateway_base_path_mapping` | Domain path to API stage mapping |
-| `aws_route53_record` | Alias DNS record |
-
-### Observability and Operations
-
-| Terraform Resource | Use |
-|---|---|
-| `aws_cloudwatch_log_group` | Access/execution log destination |
-| `aws_cloudwatch_metric_alarm` | SLO/SLI alerting |
-| `aws_iam_role` + attachments | API Gateway account logging/tracing role |
-
-### v2 (HTTP/WebSocket) Namespace (for reference)
-
-- `aws_apigatewayv2_api`
-- `aws_apigatewayv2_route`
-- `aws_apigatewayv2_integration`
-- `aws_apigatewayv2_stage`
-- `aws_apigatewayv2_domain_name`
-- `aws_apigatewayv2_api_mapping`
-- `aws_apigatewayv2_authorizer`
-
-Use these only when implementing HTTP/WebSocket APIs, not REST v1.
-
----
-
-## 18. This Module: Feature Mapping and Design Notes
-
-### Implemented Features (Current Module)
-
-This module composes REST API through submodules:
-
-- `submodules/api`: REST API definition
-- `submodules/resources`: path resources (with depth validation up to 5 levels)
-- `submodules/authorizers`: Lambda/Cognito authorizers
-- `submodules/methods`: method definitions and auth binding
-- `submodules/integrations`: backend integration definitions
-- `submodules/responses`: method + integration responses
-- `submodules/stage`: deployment, stage, method settings, optional access log group
-- `submodules/domain`: custom domain, base path mapping, Route53 alias
-
-Top-level module adds:
-
-- optional execution role creation and policy attachments
-- optional API Gateway account CloudWatch role association
-- request validators
-- gateway responses
-- optional WAFv2 association
-- optional CloudWatch metric alarms (default + custom)
-
-### Input Variables to Feature Mapping (High-Signal)
-
-| Input | Feature |
-|---|---|
-| `endpoint_configuration_types` | `REGIONAL` / `EDGE` / `PRIVATE` endpoint mode |
-| `binary_media_types`, `minimum_compression_size` | payload and compression behavior |
-| `resources`, `methods`, `integrations` | route and backend graph |
-| `method_responses`, `integration_responses` | explicit response contract mapping |
-| `gateway_responses` | default error envelope customization |
-| `request_validators` | request body/parameter validation |
-| `xray_tracing_enabled` | stage tracing |
-| `method_settings` | metrics/logging/throttle/cache flags |
-| `access_log_*` | stage access logging |
-| `observability`, `cloudwatch_metric_alarms` | alarm automation |
-| `create_domain_name`, `domain_name`, `certificate_arn`, `base_path` | custom domain routing |
-| `create_route53_record`, `hosted_zone_id`, `record_name` | DNS alias management |
-| `web_acl_arn` | WAF protection |
-| `execution_role_arn` / role-related flags | account log/tracing role strategy |
-
-### Output Highlights
-
-- API identity: `rest_api_id`, `rest_api_execution_arn`, `rest_api_root_resource_id`
-- stage/runtime: `stage_name`, `stage_arn`, `stage_execution_arn`, `invoke_url`, `deployment_id`
-- graph metadata: `resource_ids`, `authorizer_ids`, `methods_index`, `integration_ids`
-- observability: `access_log_group_name`, `cloudwatch_metric_alarm_arns`, `cloudwatch_metric_alarm_names`
-- domain metadata: `custom_domain_name`, `custom_domain_regional_domain_name`, `custom_domain_regional_zone_id`
-
-### Current Module Boundaries / Gaps (Important)
-
-These are API Gateway features you may add outside this module if needed:
-
-- usage plans + API keys resources
-- API documentation parts/version resources
-- explicit canary settings on stage
-- model resources (`aws_api_gateway_model`) management
-- mutual TLS fields on custom domain (if required)
-- per-method method settings overrides beyond global `*/*` object
-
----
-
-## 19. Production Readiness Checklist
-
-- Endpoint type selected intentionally (`REGIONAL` unless clear reason otherwise).
-- Auth mode defined for every method; no accidental `NONE`.
-- Resource policy enforced for PRIVATE APIs and restricted principals.
-- WAF associated for internet-facing APIs.
-- Access logs enabled with structured JSON and retention policy.
-- Execution logging level set appropriately (`ERROR` or temporary `INFO`).
-- Alarms configured for `5XXError`, `4XXError`, `Latency`, `IntegrationLatency`.
-- Deployment trigger includes all route/integration config to prevent stale stage.
-- Lambda permissions scoped to stage/method where possible.
-- Custom domain + TLS policy validated; legacy TLS exceptions documented.
-- Cost controls in place for logs, tracing, and cache usage.
-
----
-
-## Practical Terraform Snippets
-
-### 1) Strict IAM + Lambda Proxy Method
-
+### Terraform: Create HTTP API
 ```hcl
-resource "aws_api_gateway_method" "get_order" {
-  rest_api_id   = aws_api_gateway_rest_api.this.id
-  resource_id   = aws_api_gateway_resource.orders.id
-  http_method   = "GET"
-  authorization = "AWS_IAM"
-}
+resource "aws_apigatewayv2_api" "this" {
+  name          = var.api_name
+  protocol_type = "HTTP"
+  description   = var.description
 
-resource "aws_api_gateway_integration" "get_order" {
-  rest_api_id             = aws_api_gateway_rest_api.this.id
-  resource_id             = aws_api_gateway_resource.orders.id
-  http_method             = aws_api_gateway_method.get_order.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = aws_lambda_function.orders.invoke_arn
-}
+  # CORS (built-in for HTTP API)
+  cors_configuration {
+    allow_origins     = ["https://app.example.com"]
+    allow_methods     = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    allow_headers     = ["Content-Type", "Authorization", "X-Api-Key"]
+    expose_headers    = ["X-Request-Id"]
+    allow_credentials = true
+    max_age           = 86400
+  }
 
-resource "aws_lambda_permission" "allow_apigw" {
-  statement_id  = "AllowExecutionFromAPIGateway"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.orders.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_api_gateway_rest_api.this.execution_arn}/*/GET/orders"
+  tags = var.tags
 }
 ```
 
-### 2) Request Validator + Gateway Response
+### Routes
+- Format: `METHOD /path` e.g. `GET /users`, `POST /orders/{orderId}`
+- Special routes: `$default` (catch-all), `$connect`, `$disconnect`, `$default` (WebSocket)
+- Path parameters: `{param}`, `{param+}` (greedy)
 
 ```hcl
-resource "aws_api_gateway_request_validator" "body_and_params" {
-  rest_api_id                 = aws_api_gateway_rest_api.this.id
-  name                        = "validate-body-params"
-  validate_request_body       = true
-  validate_request_parameters = true
+resource "aws_apigatewayv2_route" "get_users" {
+  api_id    = aws_apigatewayv2_api.this.id
+  route_key = "GET /users"
+
+  target                = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  authorization_type    = "JWT"         # "NONE", "JWT", "AWS_IAM", "CUSTOM"
+  authorizer_id         = aws_apigatewayv2_authorizer.jwt.id
+  authorization_scopes  = ["api:read"]  # required scope(s)
+
+  # Request parameters mapping
+  request_parameter {
+    request_parameter_key = "route.request.header.X-User-Id"
+    required              = false
+  }
 }
 
-resource "aws_api_gateway_gateway_response" "default_4xx" {
-  rest_api_id   = aws_api_gateway_rest_api.this.id
-  response_type = "DEFAULT_4XX"
-  status_code   = "400"
+resource "aws_apigatewayv2_route" "default" {
+  api_id    = aws_apigatewayv2_api.this.id
+  route_key = "$default"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+}
+```
 
-  response_templates = {
-    "application/json" = "{\"message\":$context.error.messageString,\"requestId\":\"$context.requestId\"}"
+### Integration (Lambda Proxy)
+```hcl
+resource "aws_apigatewayv2_integration" "lambda" {
+  api_id             = aws_apigatewayv2_api.this.id
+  integration_type   = "AWS_PROXY"
+  integration_uri    = aws_lambda_function.this.invoke_arn
+
+  payload_format_version = "2.0"  # "1.0" or "2.0" — use 2.0 for HTTP API
+  timeout_milliseconds   = 29000  # max 29000ms for HTTP API
+
+  # For response streaming
+  # integration_method = "POST"
+}
+```
+
+### Stage
+```hcl
+resource "aws_apigatewayv2_stage" "this" {
+  api_id      = aws_apigatewayv2_api.this.id
+  name        = var.stage_name  # e.g. "prod", "$default"
+  auto_deploy = true
+
+  # Access logging
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.access.arn
+  }
+
+  # Default route throttle
+  default_route_settings {
+    throttling_burst_limit = 5000
+    throttling_rate_limit  = 10000
+    detailed_metrics_enabled = true
+    logging_level          = "INFO"  # REST only; not used for HTTP API
+    data_trace_enabled     = false
+  }
+
+  # Per-route overrides
+  route_settings {
+    route_key              = "POST /orders"
+    throttling_burst_limit = 100
+    throttling_rate_limit  = 50
+    detailed_metrics_enabled = true
+  }
+
+  stage_variables = {
+    env = var.environment
+  }
+
+  tags = var.tags
+}
+```
+
+### Payload Format 1.0 vs 2.0
+
+**Format 1.0** (compatible with REST API proxy):
+```json
+{
+  "httpMethod": "GET",
+  "path": "/users",
+  "headers": { "Authorization": "Bearer ..." },
+  "queryStringParameters": { "limit": "10" },
+  "body": null,
+  "isBase64Encoded": false
+}
+```
+
+**Format 2.0** (recommended for HTTP API):
+```json
+{
+  "version": "2.0",
+  "routeKey": "GET /users",
+  "rawPath": "/users",
+  "rawQueryString": "limit=10",
+  "headers": { "authorization": "Bearer ..." },
+  "queryStringParameters": { "limit": "10" },
+  "requestContext": {
+    "accountId": "123456789012",
+    "apiId": "abc123",
+    "domainName": "api.example.com",
+    "http": {
+      "method": "GET",
+      "path": "/users",
+      "sourceIp": "1.2.3.4",
+      "userAgent": "..."
+    },
+    "requestId": "abc-123",
+    "routeKey": "GET /users",
+    "stage": "prod",
+    "time": "..."
+  },
+  "body": null,
+  "isBase64Encoded": false
+}
+```
+
+---
+
+## 3. REST API (v1) — Deep Dive
+
+### API Types
+| Type | Description |
+|---|---|
+| `EDGE` | CloudFront-distributed, globally optimized. Certificate must be in `us-east-1`. |
+| `REGIONAL` | Single region. Use with CloudFront manually for caching control. |
+| `PRIVATE` | Only accessible within VPC via VPC endpoint. |
+
+```hcl
+resource "aws_api_gateway_rest_api" "this" {
+  name        = var.api_name
+  description = var.description
+
+  endpoint_configuration {
+    types            = ["REGIONAL"]  # "EDGE", "REGIONAL", "PRIVATE"
+    vpc_endpoint_ids = []  # required for PRIVATE
+  }
+
+  # Binary media types (for file uploads/downloads)
+  binary_media_types = ["multipart/form-data", "image/*", "application/octet-stream"]
+
+  # Minimum compression size (bytes); -1 = disabled
+  minimum_compression_size = 1024
+
+  # API policy (for PRIVATE or cross-account)
+  policy = data.aws_iam_policy_document.api_policy.json
+
+  tags = var.tags
+}
+```
+
+### Resources & Methods
+
+```hcl
+# Root-level resource: /users
+resource "aws_api_gateway_resource" "users" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "users"
+}
+
+# Nested resource: /users/{userId}
+resource "aws_api_gateway_resource" "user" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.users.id
+  path_part   = "{userId}"
+}
+
+# Method: GET /users/{userId}
+resource "aws_api_gateway_method" "get_user" {
+  rest_api_id          = aws_api_gateway_rest_api.this.id
+  resource_id          = aws_api_gateway_resource.user.id
+  http_method          = "GET"
+  authorization        = "COGNITO_USER_POOLS"  # "NONE", "AWS_IAM", "CUSTOM", "COGNITO_USER_POOLS"
+  authorizer_id        = aws_api_gateway_authorizer.cognito.id
+  authorization_scopes = ["api:read"]
+
+  api_key_required = false
+
+  # Validate request body / params
+  request_validator_id = aws_api_gateway_request_validator.this.id
+
+  # Parameter validation / mapping
+  request_parameters = {
+    "method.request.path.userId"         = true   # required path param
+    "method.request.header.X-Request-Id" = false  # optional header
+    "method.request.querystring.limit"   = false
+  }
+
+  request_models = {
+    "application/json" = aws_api_gateway_model.user_request.name
   }
 }
 ```
 
-### 3) Stage Logs + Alarm
-
+### Request Validator
 ```hcl
-resource "aws_cloudwatch_log_group" "api_access" {
-  name              = "/aws/apigateway/orders/prod"
-  retention_in_days = 30
+resource "aws_api_gateway_request_validator" "this" {
+  rest_api_id           = aws_api_gateway_rest_api.this.id
+  name                  = "validate-body-params"
+  validate_request_body = true
+  validate_request_parameters = true
+}
+```
+
+### Models (JSON Schema)
+```hcl
+resource "aws_api_gateway_model" "user_request" {
+  rest_api_id  = aws_api_gateway_rest_api.this.id
+  name         = "UserRequest"
+  content_type = "application/json"
+
+  schema = jsonencode({
+    "$schema" = "http://json-schema.org/draft-04/schema#"
+    title     = "UserRequest"
+    type      = "object"
+    required  = ["name", "email"]
+    properties = {
+      name  = { type = "string" }
+      email = { type = "string", format = "email" }
+      age   = { type = "integer", minimum = 0 }
+    }
+  })
+}
+```
+
+### Integration (Lambda)
+```hcl
+resource "aws_api_gateway_integration" "lambda" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.user.id
+  http_method             = aws_api_gateway_method.get_user.http_method
+
+  integration_http_method = "POST"       # Lambda always uses POST
+  type                    = "AWS_PROXY"  # "AWS", "AWS_PROXY", "HTTP", "HTTP_PROXY", "MOCK"
+  uri                     = aws_lambda_function.this.invoke_arn
+
+  # Timeout: 50ms - 29000ms
+  timeout_milliseconds = 29000
+
+  # For non-proxy (AWS) integration only — request mapping
+  # request_templates = {
+  #   "application/json" = file("${path.module}/mapping/request.vtl")
+  # }
+
+  # Pass-through behavior for non-proxy
+  # passthrough_behavior = "WHEN_NO_TEMPLATES"  # WHEN_NO_TEMPLATES | WHEN_NO_MATCH | NEVER
+
+  # Request parameter mapping
+  request_parameters = {
+    "integration.request.header.X-User-Id" = "method.request.header.X-User-Id"
+  }
+}
+```
+
+### Method Response & Integration Response (non-proxy)
+```hcl
+resource "aws_api_gateway_method_response" "ok" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  resource_id = aws_api_gateway_resource.user.id
+  http_method = aws_api_gateway_method.get_user.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin" = false
+    "method.response.header.X-Request-Id"               = false
+  }
+
+  response_models = {
+    "application/json" = "Empty"
+  }
 }
 
-resource "aws_api_gateway_stage" "prod" {
+resource "aws_api_gateway_integration_response" "ok" {
+  rest_api_id       = aws_api_gateway_rest_api.this.id
+  resource_id       = aws_api_gateway_resource.user.id
+  http_method       = aws_api_gateway_method.get_user.http_method
+  status_code       = aws_api_gateway_method_response.ok.status_code
+  selection_pattern = ""  # regex to match; "" = default/success
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin" = "'*'"
+    "method.response.header.X-Request-Id"               = "integration.response.header.X-Request-Id"
+  }
+
+  response_templates = {
+    "application/json" = ""  # passthrough or VTL
+  }
+}
+```
+
+### Deployment & Stage (REST API)
+```hcl
+resource "aws_api_gateway_deployment" "this" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+
+  triggers = {
+    # Force redeploy when any API resource changes
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_resource.users.id,
+      aws_api_gateway_method.get_user.id,
+      aws_api_gateway_integration.lambda.id,
+    ]))
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_api_gateway_stage" "this" {
   rest_api_id   = aws_api_gateway_rest_api.this.id
   deployment_id = aws_api_gateway_deployment.this.id
-  stage_name    = "prod"
+  stage_name    = var.stage_name  # e.g. "prod", "v1"
+  description   = "Production stage"
+
+  # Access logging
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.access.arn
+  }
+
+  # Execution logging
+  xray_tracing_enabled = true
+
+  # Stage-level throttle
+  default_route_settings {  # REST uses method_settings below
+  }
+
+  # Variables available in mapping templates / Lambda as context.stage
+  variables = {
+    env             = var.environment
+    lambda_alias    = "live"
+  }
+
+  # Cache cluster
+  cache_cluster_enabled = var.enable_cache
+  cache_cluster_size    = "0.5"  # GB: "0.5","1.6","6.1","13.5","28.4","58.2","118","237"
+
+  tags = var.tags
+}
+
+# Per-method settings (logging, throttle, cache)
+resource "aws_api_gateway_method_settings" "all" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "*/*"  # "resource/METHOD" or "*/*" for all
+
+  settings {
+    metrics_enabled        = true
+    logging_level          = "INFO"  # "OFF", "ERROR", "INFO"
+    data_trace_enabled     = false   # full request/response logging (expensive!)
+    throttling_burst_limit = 5000
+    throttling_rate_limit  = 10000
+    caching_enabled        = false
+    cache_ttl_in_seconds   = 300
+    cache_data_encrypted   = true
+    require_authorization_for_cache_control = true
+    unauthorized_cache_control_header_strategy = "SUCCEED_WITH_RESPONSE_HEADER"
+  }
+}
+```
+
+---
+
+## 4. WebSocket API — Deep Dive
+
+### Concepts
+- **Routes**: `$connect`, `$disconnect`, `$default`, custom action-based routes.
+- **Connection ID**: Unique ID per connection, used to send messages back to clients.
+- **Callback URL**: `https://{api-id}.execute-api.{region}.amazonaws.com/{stage}/@connections/{connectionId}`
+
+```hcl
+resource "aws_apigatewayv2_api" "ws" {
+  name                       = "${var.api_name}-ws"
+  protocol_type              = "WEBSOCKET"
+  route_selection_expression = "$request.body.action"  # key to route on
+  description                = "WebSocket API"
+
+  tags = var.tags
+}
+
+# $connect route
+resource "aws_apigatewayv2_route" "connect" {
+  api_id    = aws_apigatewayv2_api.ws.id
+  route_key = "$connect"
+  target    = "integrations/${aws_apigatewayv2_integration.connect.id}"
+  authorization_type = "NONE"  # or "AWS_IAM" or "CUSTOM"
+}
+
+# $disconnect route
+resource "aws_apigatewayv2_route" "disconnect" {
+  api_id    = aws_apigatewayv2_api.ws.id
+  route_key = "$disconnect"
+  target    = "integrations/${aws_apigatewayv2_integration.disconnect.id}"
+}
+
+# $default route (catch-all)
+resource "aws_apigatewayv2_route" "default" {
+  api_id    = aws_apigatewayv2_api.ws.id
+  route_key = "$default"
+  target    = "integrations/${aws_apigatewayv2_integration.default.id}"
+}
+
+# Custom action route
+resource "aws_apigatewayv2_route" "message" {
+  api_id    = aws_apigatewayv2_api.ws.id
+  route_key = "sendMessage"
+  target    = "integrations/${aws_apigatewayv2_integration.message.id}"
+}
+
+resource "aws_apigatewayv2_integration" "connect" {
+  api_id             = aws_apigatewayv2_api.ws.id
+  integration_type   = "AWS_PROXY"
+  integration_uri    = aws_lambda_function.ws_connect.invoke_arn
+  payload_format_version = "1.0"  # WebSocket only supports 1.0
+}
+
+resource "aws_apigatewayv2_stage" "ws" {
+  api_id      = aws_apigatewayv2_api.ws.id
+  name        = "prod"
+  auto_deploy = true
+
+  default_route_settings {
+    throttling_burst_limit   = 1000
+    throttling_rate_limit    = 500
+    data_trace_enabled       = false
+    detailed_metrics_enabled = true
+    logging_level            = "INFO"
+  }
 
   access_log_settings {
-    destination_arn = aws_cloudwatch_log_group.api_access.arn
-    format          = jsonencode({
-      requestId = "$context.requestId"
-      ip        = "$context.identity.sourceIp"
-      method    = "$context.httpMethod"
-      path      = "$context.resourcePath"
-      status    = "$context.status"
-      latency   = "$context.responseLatency"
+    destination_arn = aws_cloudwatch_log_group.ws_access.arn
+  }
+}
+```
+
+### Sending Messages to Clients (Lambda)
+```python
+import boto3
+
+def send_to_connection(api_id, stage, region, connection_id, data):
+    endpoint = f"https://{api_id}.execute-api.{region}.amazonaws.com/{stage}"
+    client = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint)
+    try:
+        client.post_to_connection(
+            ConnectionId=connection_id,
+            Data=json.dumps(data).encode()
+        )
+    except client.exceptions.GoneException:
+        # Connection is stale — delete from your DB
+        pass
+```
+
+### IAM for Lambda to Send to Connections
+```hcl
+data "aws_iam_policy_document" "ws_send" {
+  statement {
+    effect  = "Allow"
+    actions = ["execute-api:ManageConnections"]
+    resources = [
+      "${aws_apigatewayv2_api.ws.execution_arn}/${var.stage}/@connections/*"
+    ]
+  }
+}
+```
+
+---
+
+## 5. Integrations
+
+### Integration Types
+
+| Type | Description | Use Case |
+|---|---|---|
+| `AWS_PROXY` | Lambda proxy — full event passthrough | Lambda (recommended) |
+| `AWS` | AWS service action with mapping templates | Invoke Lambda, SQS, DynamoDB directly |
+| `HTTP_PROXY` | HTTP passthrough to backend URL | Upstream HTTP service |
+| `HTTP` | HTTP with mapping templates | HTTP with transform |
+| `MOCK` | Respond directly from API GW (no backend) | Health checks, CORS OPTIONS, testing |
+
+### HTTP Proxy Integration (to backend service)
+```hcl
+resource "aws_apigatewayv2_integration" "http_backend" {
+  api_id             = aws_apigatewayv2_api.this.id
+  integration_type   = "HTTP_PROXY"
+  integration_method = "ANY"
+  integration_uri    = "https://internal-service.example.com/{proxy}"
+
+  connection_type    = "VPC_LINK"
+  connection_id      = aws_apigatewayv2_vpc_link.this.id
+
+  timeout_milliseconds = 15000
+}
+```
+
+### Direct AWS Service Integration (REST, non-proxy)
+Example: API GW → SQS (no Lambda needed)
+```hcl
+resource "aws_api_gateway_integration" "sqs" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.queue.id
+  http_method             = "POST"
+  type                    = "AWS"
+  integration_http_method = "POST"
+  uri                     = "arn:aws:apigateway:${var.region}:sqs:path/${data.aws_caller_identity.current.account_id}/${aws_sqs_queue.this.name}"
+  credentials             = aws_iam_role.apigw_sqs.arn
+
+  request_parameters = {
+    "integration.request.header.Content-Type" = "'application/x-www-form-urlencoded'"
+  }
+
+  request_templates = {
+    "application/json" = "Action=SendMessage&MessageBody=$util.urlEncode($input.body)"
+  }
+}
+```
+
+### Mock Integration (CORS OPTIONS or health check)
+```hcl
+resource "aws_api_gateway_integration" "options_mock" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  resource_id = aws_api_gateway_resource.users.id
+  http_method = "OPTIONS"
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+```
+
+### VPC Link (HTTP API → private ALB/NLB)
+```hcl
+resource "aws_apigatewayv2_vpc_link" "this" {
+  name               = "${var.api_name}-vpc-link"
+  security_group_ids = [aws_security_group.vpc_link.id]
+  subnet_ids         = var.private_subnet_ids
+
+  tags = var.tags
+}
+
+resource "aws_apigatewayv2_integration" "alb" {
+  api_id             = aws_apigatewayv2_api.this.id
+  integration_type   = "HTTP_PROXY"
+  integration_method = "ANY"
+  integration_uri    = aws_lb_listener.internal.arn  # ALB listener ARN
+  connection_type    = "VPC_LINK"
+  connection_id      = aws_apigatewayv2_vpc_link.this.id
+}
+```
+
+### VPC Link (REST API → private NLB)
+```hcl
+resource "aws_api_gateway_vpc_link" "this" {
+  name        = "${var.api_name}-vpc-link"
+  target_arns = [aws_lb.internal.arn]  # NLB only for REST API VPC Link
+
+  tags = var.tags
+}
+
+resource "aws_api_gateway_integration" "nlb" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.proxy.id
+  http_method             = "ANY"
+  type                    = "HTTP_PROXY"
+  integration_http_method = "ANY"
+  uri                     = "http://${aws_lb.internal.dns_name}/{proxy}"
+  connection_type         = "VPC_LINK"
+  connection_id           = aws_api_gateway_vpc_link.this.id
+}
+```
+
+---
+
+## 6. Authorizers & Authentication
+
+### Auth Types Summary
+
+| Type | API | Description |
+|---|---|---|
+| `NONE` | All | No auth — public endpoint |
+| `AWS_IAM` | HTTP + REST | SigV4 signed requests (IAM users/roles) |
+| `JWT` | HTTP only | Native JWT validation (Cognito / any OIDC) |
+| `COGNITO_USER_POOLS` | REST only | Cognito User Pool token validation |
+| `CUSTOM` (Lambda) | All | Custom auth logic in Lambda |
+
+### JWT Authorizer (HTTP API — recommended for Cognito)
+```hcl
+resource "aws_apigatewayv2_authorizer" "jwt" {
+  api_id           = aws_apigatewayv2_api.this.id
+  authorizer_type  = "JWT"
+  name             = "cognito-jwt"
+  identity_sources = ["$request.header.Authorization"]  # where to find token
+
+  jwt_configuration {
+    audience = [aws_cognito_user_pool_client.this.id]
+    issuer   = "https://cognito-idp.${var.region}.amazonaws.com/${aws_cognito_user_pool.this.id}"
+  }
+}
+```
+
+### Cognito Authorizer (REST API)
+```hcl
+resource "aws_api_gateway_authorizer" "cognito" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  name        = "cognito-authorizer"
+  type        = "COGNITO_USER_POOLS"
+
+  provider_arns = [aws_cognito_user_pool.this.arn]
+
+  # Where to find the token
+  identity_source = "method.request.header.Authorization"
+
+  # Optional: comma-separated list of scopes to check
+  # For COGNITO type, scopes are checked at the method level (authorization_scopes)
+}
+```
+
+### Lambda Authorizer (REST API) — Token-based
+```hcl
+resource "aws_api_gateway_authorizer" "lambda_token" {
+  rest_api_id                      = aws_api_gateway_rest_api.this.id
+  name                             = "lambda-token-authorizer"
+  type                             = "TOKEN"                       # "TOKEN" or "REQUEST"
+  authorizer_uri                   = aws_lambda_function.authorizer.invoke_arn
+  authorizer_credentials           = aws_iam_role.apigw_authorizer.arn
+  identity_source                  = "method.request.header.Authorization"
+  authorizer_result_ttl_in_seconds = 300  # 0 = no caching, max 3600
+  identity_validation_expression   = "^Bearer [-0-9a-zA-Z\\._]*$"  # regex pre-check
+}
+```
+
+### Lambda Authorizer (REST API) — Request-based
+```hcl
+resource "aws_api_gateway_authorizer" "lambda_request" {
+  rest_api_id     = aws_api_gateway_rest_api.this.id
+  name            = "lambda-request-authorizer"
+  type            = "REQUEST"
+  authorizer_uri  = aws_lambda_function.authorizer.invoke_arn
+  authorizer_credentials = aws_iam_role.apigw_authorizer.arn
+
+  # Can use multiple sources: headers, querystring, context, stageVariables
+  identity_source = "method.request.header.Authorization, method.request.querystring.api_key"
+
+  authorizer_result_ttl_in_seconds = 0  # disable caching for request authorizers
+}
+```
+
+### Lambda Authorizer (HTTP API)
+```hcl
+resource "aws_apigatewayv2_authorizer" "lambda" {
+  api_id           = aws_apigatewayv2_api.this.id
+  authorizer_type  = "REQUEST"
+  name             = "lambda-authorizer"
+
+  authorizer_uri                    = aws_lambda_function.authorizer.invoke_arn
+  authorizer_credentials_arn        = aws_iam_role.apigw_authorizer.arn
+  authorizer_result_ttl_in_seconds  = 300
+  authorizer_payload_format_version = "2.0"  # "1.0" or "2.0"
+  enable_simple_responses           = true   # true: return {isAuthorized: bool}, false: return IAM policy
+
+  identity_sources = ["$request.header.Authorization"]
+}
+```
+
+### Lambda Authorizer Response — Simple (HTTP API v2.0)
+```python
+def handler(event, context):
+    token = event["identitySource"][0]  # the header value
+    if valid(token):
+        return {
+            "isAuthorized": True,
+            "context": {
+                "userId": "user-123",
+                "tenantId": "tenant-456"
+            }
+        }
+    return {"isAuthorized": False}
+```
+
+### Lambda Authorizer Response — IAM Policy (REST API)
+```python
+def handler(event, context):
+    token = event["authorizationToken"]
+    if valid(token):
+        return {
+            "principalId": "user-123",
+            "policyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [{
+                    "Action": "execute-api:Invoke",
+                    "Effect": "Allow",
+                    "Resource": event["methodArn"]  # or "*" for wildcard
+                }]
+            },
+            "context": {
+                "userId": "user-123"  # available in $context.authorizer.userId
+            },
+            "usageIdentifierKey": "optional-key-for-usage-plan"
+        }
+```
+
+### IAM for API GW to invoke Lambda authorizer
+```hcl
+resource "aws_iam_role" "apigw_authorizer" {
+  name = "${var.api_name}-authorizer-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "apigateway.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "apigw_authorizer" {
+  role = aws_iam_role.apigw_authorizer.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "lambda:InvokeFunction"
+      Resource = aws_lambda_function.authorizer.arn
+    }]
+  })
+}
+
+resource "aws_lambda_permission" "apigw_authorizer" {
+  statement_id  = "AllowAPIGWAuthorizer"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.authorizer.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.this.execution_arn}/authorizers/${aws_api_gateway_authorizer.lambda_token.id}"
+}
+```
+
+### API Keys (REST API only)
+```hcl
+resource "aws_api_gateway_api_key" "client" {
+  name        = "${var.api_name}-client-key"
+  description = "API key for client"
+  enabled     = true
+}
+
+resource "aws_api_gateway_usage_plan" "this" {
+  name        = "${var.api_name}-usage-plan"
+  description = "Standard usage plan"
+
+  api_stages {
+    api_id = aws_api_gateway_rest_api.this.id
+    stage  = aws_api_gateway_stage.this.stage_name
+
+    # Per-method throttle within usage plan
+    throttle {
+      path        = "/users/GET"
+      burst_limit = 100
+      rate_limit  = 50
+    }
+  }
+
+  quota_settings {
+    limit  = 10000
+    offset = 0
+    period = "MONTH"  # "DAY", "WEEK", "MONTH"
+  }
+
+  throttle_settings {
+    burst_limit = 500
+    rate_limit  = 1000
+  }
+}
+
+resource "aws_api_gateway_usage_plan_key" "this" {
+  key_id        = aws_api_gateway_api_key.client.id
+  key_type      = "API_KEY"
+  usage_plan_id = aws_api_gateway_usage_plan.this.id
+}
+```
+
+---
+
+## 7. Request / Response Transformation
+
+> Only available in REST API (v1) via Velocity Template Language (VTL). HTTP API has limited parameter mapping.
+
+### VTL Context Variables
+```
+$context.requestId          — Unique request ID
+$context.identity.sourceIp  — Client IP
+$context.authorizer.userId  — From authorizer context
+$context.stage              — Stage name
+$context.stageVariables.myVar — Stage variables
+
+$input.body                 — Raw request body (string)
+$input.json('$.field')      — JSONPath on body
+$input.params('paramName')  — Path/query/header param
+$util.urlEncode(str)        — URL encode
+$util.urlDecode(str)        — URL decode
+$util.escapeJavaScript(str) — Escape for JS
+$util.base64Encode(str)     — Base64 encode
+$util.base64Decode(str)     — Base64 decode
+```
+
+### Request Mapping Template Example
+```vtl
+## Pass selected fields to Lambda
+{
+  "userId": "$input.params('userId')",
+  "requestBody": $input.json('$'),
+  "requestId": "$context.requestId",
+  "sourceIp": "$context.identity.sourceIp",
+  "stage": "$context.stage"
+}
+```
+
+### Response Mapping Template
+```vtl
+## Wrap response in standard envelope
+{
+  "success": true,
+  "data": $input.json('$'),
+  "requestId": "$context.requestId"
+}
+```
+
+### HTTP API Parameter Mapping (limited, no VTL)
+```hcl
+resource "aws_apigatewayv2_integration" "this" {
+  api_id           = aws_apigatewayv2_api.this.id
+  integration_type = "HTTP_PROXY"
+  integration_uri  = "https://backend.example.com"
+
+  request_parameters = {
+    "append:header.X-Forwarded-For" = "$context.identity.sourceIp"
+    "overwrite:path"                = "/v2$request.path"
+    "remove:header.X-Internal"      = "''"
+  }
+
+  response_parameters {
+    status_code = "200"
+    mappings = {
+      "append:header.X-Request-Id" = "$context.requestId"
+    }
+  }
+}
+```
+
+---
+
+## 8. Stages & Deployments
+
+### REST API Deployment Strategy
+- Every change to resources/methods/integrations requires a new **Deployment**.
+- Deployments are immutable snapshots.
+- Use `triggers` with `sha1(jsonencode(...))` to force redeploy on change.
+- `create_before_destroy = true` prevents downtime.
+
+```hcl
+# Collect all API resources into a hash for change detection
+locals {
+  api_resources_hash = sha1(jsonencode([
+    aws_api_gateway_rest_api.this.body,
+    aws_api_gateway_resource.users.id,
+    aws_api_gateway_method.get_users.id,
+    aws_api_gateway_integration.lambda.id,
+    aws_api_gateway_method_response.ok.id,
+    aws_api_gateway_integration_response.ok.id,
+    aws_api_gateway_authorizer.cognito.id,
+  ]))
+}
+
+resource "aws_api_gateway_deployment" "this" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  triggers    = { redeployment = local.api_resources_hash }
+  lifecycle   { create_before_destroy = true }
+}
+```
+
+### HTTP API — Auto Deploy
+```hcl
+resource "aws_apigatewayv2_stage" "this" {
+  api_id      = aws_apigatewayv2_api.this.id
+  name        = "prod"
+  auto_deploy = true  # automatically deploy on changes
+}
+```
+
+### Stage Variables (REST)
+- Accessible in mapping templates as `$stageVariables.varName`.
+- Accessible in Lambda via event: `event.stageVariables.varName`.
+- Useful to point to different Lambda aliases per stage.
+
+```hcl
+resource "aws_api_gateway_stage" "this" {
+  variables = {
+    lambdaAlias = "live"
+    backendUrl  = "https://backend-${var.environment}.internal"
+  }
+}
+
+# In integration URI, use stage variable:
+# arn:aws:apigateway:region:lambda:path/functions/arn:aws:lambda:region:account:function:name:${stageVariables.lambdaAlias}/invocations
+```
+
+---
+
+## 9. Custom Domains & TLS
+
+### Custom Domain (HTTP API or REST API)
+```hcl
+resource "aws_acm_certificate" "api" {
+  domain_name       = "api.example.com"
+  validation_method = "DNS"
+  # For EDGE REST API: certificate MUST be in us-east-1
+  # For REGIONAL or HTTP API: certificate in same region as API
+
+  tags = var.tags
+}
+
+resource "aws_acm_certificate_validation" "api" {
+  certificate_arn         = aws_acm_certificate.api.arn
+  validation_record_fqdns = [for r in aws_acm_certificate.api.domain_validation_options : r.resource_record_name]
+}
+
+resource "aws_apigatewayv2_domain_name" "this" {
+  domain_name = "api.example.com"
+
+  domain_name_configuration {
+    certificate_arn = aws_acm_certificate.api.arn
+    endpoint_type   = "REGIONAL"
+    security_policy = "TLS_1_2"  # "TLS_1_0" or "TLS_1_2"
+  }
+
+  # mTLS truststore (optional)
+  # mutual_tls_authentication {
+  #   truststore_uri     = "s3://${aws_s3_bucket.truststore.bucket}/truststore.pem"
+  #   truststore_version = aws_s3_object.truststore.version_id
+  # }
+
+  tags = var.tags
+}
+
+resource "aws_apigatewayv2_api_mapping" "this" {
+  api_id      = aws_apigatewayv2_api.this.id
+  domain_name = aws_apigatewayv2_domain_name.this.id
+  stage       = aws_apigatewayv2_stage.this.id
+  api_mapping_key = ""  # "" = root, "v1" = api.example.com/v1
+}
+
+# Route53 alias to API GW regional endpoint
+resource "aws_route53_record" "api" {
+  zone_id = data.aws_route53_zone.this.zone_id
+  name    = "api.example.com"
+  type    = "A"
+
+  alias {
+    name                   = aws_apigatewayv2_domain_name.this.domain_name_configuration[0].target_domain_name
+    zone_id                = aws_apigatewayv2_domain_name.this.domain_name_configuration[0].hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+```
+
+### REST API Custom Domain
+```hcl
+resource "aws_api_gateway_domain_name" "this" {
+  domain_name              = "api.example.com"
+  regional_certificate_arn = aws_acm_certificate.api.arn  # regional_certificate_arn for REGIONAL
+  # certificate_arn        = aws_acm_certificate.api.arn  # certificate_arn for EDGE (us-east-1)
+
+  endpoint_configuration {
+    types = ["REGIONAL"]  # or ["EDGE"]
+  }
+
+  security_policy = "TLS_1_2"
+
+  tags = var.tags
+}
+
+resource "aws_api_gateway_base_path_mapping" "this" {
+  api_id      = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  domain_name = aws_api_gateway_domain_name.this.domain_name
+  base_path   = "v1"  # empty = root mapping
+}
+```
+
+---
+
+## 10. Throttling & Usage Plans
+
+### Throttling Hierarchy (REST API)
+```
+Account limit (10,000 rps default, adjustable)
+  └─→ Stage-level throttle (method_settings */* or stage default)
+        └─→ Usage plan throttle (per API key)
+              └─→ Per-route/method throttle
+```
+
+### Stage-Level Throttle (REST API)
+```hcl
+resource "aws_api_gateway_method_settings" "all" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "*/*"
+
+  settings {
+    throttling_burst_limit = 5000   # concurrent requests
+    throttling_rate_limit  = 10000  # requests/second (steady state)
+  }
+}
+```
+
+### HTTP API Throttle
+```hcl
+resource "aws_apigatewayv2_stage" "this" {
+  default_route_settings {
+    throttling_burst_limit = 5000
+    throttling_rate_limit  = 10000
+  }
+}
+```
+
+### Throttle Error Responses
+- `429 Too Many Requests` — throttled by API GW.
+- `503 Service Unavailable` — downstream (Lambda) throttled.
+- Use exponential backoff with jitter in clients.
+
+---
+
+## 11. CORS
+
+### HTTP API — Built-in CORS (simplest)
+```hcl
+resource "aws_apigatewayv2_api" "this" {
+  cors_configuration {
+    allow_origins     = ["https://app.example.com", "https://admin.example.com"]
+    allow_methods     = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+    allow_headers     = ["Content-Type", "Authorization", "X-Api-Key", "X-Amz-Date"]
+    expose_headers    = ["X-Request-Id", "X-Response-Time"]
+    allow_credentials = true
+    max_age           = 86400
+  }
+}
+```
+
+### REST API — Manual CORS (OPTIONS method + integration responses)
+```hcl
+# OPTIONS method
+resource "aws_api_gateway_method" "options" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.users.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "options" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  resource_id = aws_api_gateway_resource.users.id
+  http_method = "OPTIONS"
+  type        = "MOCK"
+  request_templates = { "application/json" = "{\"statusCode\": 200}" }
+}
+
+resource "aws_api_gateway_method_response" "options_200" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  resource_id = aws_api_gateway_resource.users.id
+  http_method = "OPTIONS"
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+    "method.response.header.Access-Control-Max-Age"       = true
+  }
+  response_models = { "application/json" = "Empty" }
+}
+
+resource "aws_api_gateway_integration_response" "options_200" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  resource_id = aws_api_gateway_resource.users.id
+  http_method = "OPTIONS"
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,Authorization,X-Api-Key'"
+    "method.response.header.Access-Control-Allow-Methods" = "'GET,POST,PUT,DELETE,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'https://app.example.com'"
+    "method.response.header.Access-Control-Max-Age"       = "'86400'"
+  }
+}
+
+# Also add CORS headers to actual method responses
+resource "aws_api_gateway_method_response" "get_ok" {
+  # ...
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin" = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "get_ok" {
+  # ...
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin" = "'*'"
+  }
+}
+```
+
+---
+
+## 12. Caching
+
+> REST API only. Not available in HTTP API.
+
+### Enable Cache
+```hcl
+resource "aws_api_gateway_stage" "this" {
+  cache_cluster_enabled = true
+  cache_cluster_size    = "0.5"  # GB: 0.5, 1.6, 6.1, 13.5, 28.4, 58.2, 118, 237
+}
+
+resource "aws_api_gateway_method_settings" "cached" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "users/GET"
+
+  settings {
+    caching_enabled      = true
+    cache_ttl_in_seconds = 300   # 0-3600; 0 = disable
+    cache_data_encrypted = true
+
+    # Allow clients to invalidate cache with Cache-Control: max-age=0
+    require_authorization_for_cache_control = true
+    unauthorized_cache_control_header_strategy = "SUCCEED_WITH_RESPONSE_HEADER"
+    # Options: FAIL_WITH_403, SUCCEED_WITH_RESPONSE_HEADER, SUCCEED_WITHOUT_RESPONSE_HEADER
+  }
+}
+```
+
+### Cache Key (per-method)
+- Default cache key = full request path.
+- Add query parameters and headers to cache key:
+
+```hcl
+resource "aws_api_gateway_method" "get_users" {
+  request_parameters = {
+    "method.request.querystring.limit"  = false
+    "method.request.querystring.offset" = false
+  }
+}
+
+resource "aws_api_gateway_integration" "lambda" {
+  cache_key_parameters = [
+    "method.request.querystring.limit",
+    "method.request.querystring.offset"
+  ]
+  cache_namespace = "userCache"
+}
+```
+
+### Cache Invalidation
+- Header: `Cache-Control: max-age=0` (if authorized).
+- AWS CLI: `aws apigateway flush-stage-cache --rest-api-id ... --stage-name ...`
+
+---
+
+## 13. Private APIs (VPC)
+
+> REST API only.
+
+```hcl
+resource "aws_api_gateway_rest_api" "private" {
+  name = "${var.api_name}-private"
+
+  endpoint_configuration {
+    types            = ["PRIVATE"]
+    vpc_endpoint_ids = [aws_vpc_endpoint.apigw.id]
+  }
+
+  # Resource policy — restrict access to specific VPC endpoint
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = "execute-api:Invoke"
+        Resource  = "execute-api:/*"
+        Condition = {
+          StringEquals = {
+            "aws:SourceVpce" = aws_vpc_endpoint.apigw.id
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_vpc_endpoint" "apigw" {
+  vpc_id              = var.vpc_id
+  service_name        = "com.amazonaws.${var.region}.execute-api"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = var.private_subnet_ids
+  security_group_ids  = [aws_security_group.vpce.id]
+  private_dns_enabled = true
+
+  tags = var.tags
+}
+```
+
+---
+
+## 14. Canary Deployments
+
+> REST API only.
+
+```hcl
+resource "aws_api_gateway_stage" "this" {
+  canary_settings {
+    percent_traffic          = 10.0  # % of traffic to canary
+    stage_variable_overrides = {
+      lambdaAlias = "canary"
+    }
+    use_stage_cache = false
+  }
+}
+
+# After validation, promote canary:
+# aws apigateway update-stage --rest-api-id ... --stage-name ... \
+#   --patch-operations op=remove,path=/canarySettings
+```
+
+---
+
+## 15. Mutual TLS (mTLS)
+
+```hcl
+# Upload truststore to S3
+resource "aws_s3_object" "truststore" {
+  bucket = aws_s3_bucket.truststore.id
+  key    = "truststore.pem"
+  source = "certs/truststore.pem"
+}
+
+resource "aws_apigatewayv2_domain_name" "mtls" {
+  domain_name = "secure-api.example.com"
+
+  domain_name_configuration {
+    certificate_arn = aws_acm_certificate.api.arn
+    endpoint_type   = "REGIONAL"
+    security_policy = "TLS_1_2"
+  }
+
+  mutual_tls_authentication {
+    truststore_uri     = "s3://${aws_s3_bucket.truststore.bucket}/${aws_s3_object.truststore.key}"
+    truststore_version = aws_s3_object.truststore.version_id
+  }
+}
+```
+
+---
+
+## 16. WAF Integration
+
+```hcl
+resource "aws_wafv2_web_acl" "api" {
+  name  = "${var.api_name}-waf"
+  scope = "REGIONAL"
+
+  default_action { allow {} }
+
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 1
+    override_action { none {} }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesCommonRuleSet"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "AWSManagedRulesCommonRuleSet"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "RateLimitRule"
+    priority = 2
+    action { block {} }
+    statement {
+      rate_based_statement {
+        limit              = 2000  # requests per 5-minute window
+        aggregate_key_type = "IP"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "RateLimit"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.api_name}-waf"
+    sampled_requests_enabled   = true
+  }
+}
+
+# Associate WAF with HTTP API stage
+resource "aws_wafv2_web_acl_association" "api" {
+  resource_arn = aws_apigatewayv2_stage.this.arn
+  web_acl_arn  = aws_wafv2_web_acl.api.arn
+}
+
+# Associate WAF with REST API stage
+resource "aws_wafv2_web_acl_association" "rest" {
+  resource_arn = aws_api_gateway_stage.this.arn
+  web_acl_arn  = aws_wafv2_web_acl.api.arn
+}
+```
+
+---
+
+## 17. Observability — Access Logging
+
+### Access Log Format Variables
+```
+$context.requestId              — Unique request ID
+$context.identity.sourceIp      — Client IP
+$context.httpMethod             — HTTP method
+$context.routeKey               — Route key (HTTP API)
+$context.resourcePath           — Path (REST API)
+$context.status                 — Response HTTP status
+$context.responseLength         — Response size in bytes
+$context.requestTime            — Request timestamp (CLF)
+$context.requestTimeEpoch       — Request timestamp (Unix ms)
+$context.integrationLatency     — Backend latency in ms
+$context.responseLatency        — Total API GW latency in ms
+$context.error.message          — Error message (if any)
+$context.error.responseType     — Error type
+$context.authorizer.principalId — Auth principal
+$context.authorizer.userId      — From authorizer context map
+$context.identity.userAgent     — Client User-Agent
+$context.domainName             — Custom domain (if any)
+$context.apiId                  — API ID
+$context.stage                  — Stage name
+$context.protocol               — HTTP/1.1 or HTTP/2
+```
+
+### JSON Access Log Setup
+```hcl
+resource "aws_cloudwatch_log_group" "access" {
+  name              = "/aws/apigateway/${var.api_name}/access"
+  retention_in_days = 30
+  kms_key_id        = var.kms_key_arn
+  tags              = var.tags
+}
+
+# HTTP API
+resource "aws_apigatewayv2_stage" "this" {
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.access.arn
+  }
+}
+
+# REST API — log format set in stage access_log_settings
+resource "aws_api_gateway_stage" "this" {
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.access.arn
+    # Format string — use JSON for structured logging
+  }
+}
+```
+
+### Access Log Format String (use in stage resource or console)
+```json
+{
+  "requestId": "$context.requestId",
+  "sourceIp": "$context.identity.sourceIp",
+  "method": "$context.httpMethod",
+  "path": "$context.path",
+  "routeKey": "$context.routeKey",
+  "status": "$context.status",
+  "protocol": "$context.protocol",
+  "responseLength": "$context.responseLength",
+  "requestTime": "$context.requestTime",
+  "integrationLatency": "$context.integrationLatency",
+  "responseLatency": "$context.responseLatency",
+  "userAgent": "$context.identity.userAgent",
+  "errorMessage": "$context.error.message",
+  "authorizerError": "$context.authorizer.error",
+  "userId": "$context.authorizer.userId",
+  "stage": "$context.stage",
+  "apiId": "$context.apiId"
+}
+```
+
+### IAM for API GW to write logs
+```hcl
+resource "aws_iam_role" "apigw_logs" {
+  name = "APIGatewayCloudWatchLogsRole"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "apigateway.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "apigw_logs" {
+  role       = aws_iam_role.apigw_logs.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+}
+
+# Must be set once per account per region
+resource "aws_api_gateway_account" "this" {
+  cloudwatch_role_arn = aws_iam_role.apigw_logs.arn
+}
+```
+
+---
+
+## 18. Observability — Execution Logging
+
+> REST API only (HTTP API has access logging only).
+
+```hcl
+resource "aws_cloudwatch_log_group" "execution" {
+  name              = "API-Gateway-Execution-Logs_${aws_api_gateway_rest_api.this.id}/${var.stage_name}"
+  retention_in_days = 7  # execution logs are verbose; short retention
+  tags              = var.tags
+}
+
+resource "aws_api_gateway_method_settings" "all" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "*/*"
+
+  settings {
+    metrics_enabled    = true
+    logging_level      = "INFO"   # "OFF", "ERROR", "INFO"
+    data_trace_enabled = false    # logs full request/response — VERY verbose, use for debugging only
+  }
+}
+```
+
+### Execution Log Content
+- `INFO`: Method request details, authorization decisions, integration request/response, method response.
+- `ERROR`: Only errors.
+- `data_trace_enabled = true`: Full request/response body logged — use only temporarily for debugging.
+
+---
+
+## 19. Observability — Metrics & Alarms
+
+### Built-in CloudWatch Metrics (namespace: `AWS/ApiGateway`)
+
+| Metric | Description | Stat |
+|---|---|---|
+| `Count` | Total API calls | Sum |
+| `4XXError` | Client errors (400-499) | Sum, Avg |
+| `5XXError` | Server errors (500-599) | Sum, Avg |
+| `Latency` | Total end-to-end latency (including integration) | Avg, p50, p95, p99 |
+| `IntegrationLatency` | Backend latency only | Avg, p50, p95, p99 |
+| `CacheHitCount` | Cache hits | Sum |
+| `CacheMissCount` | Cache misses | Sum |
+| `DataProcessed` | Data transferred (bytes) | Sum |
+
+### Dimensions
+- REST API: `ApiName`, `Method`, `Resource`, `Stage`
+- HTTP API: `ApiId`, `Stage`
+
+### CloudWatch Alarms
+```hcl
+resource "aws_cloudwatch_metric_alarm" "5xx" {
+  alarm_name          = "${var.api_name}-5xx-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "5XXError"
+  namespace           = "AWS/ApiGateway"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    ApiName = aws_api_gateway_rest_api.this.name
+    Stage   = aws_api_gateway_stage.this.stage_name
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "4xx" {
+  alarm_name          = "${var.api_name}-4xx-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "4XXError"
+  namespace           = "AWS/ApiGateway"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 100  # tune based on expected traffic
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    ApiName = aws_api_gateway_rest_api.this.name
+    Stage   = aws_api_gateway_stage.this.stage_name
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "p99_latency" {
+  alarm_name          = "${var.api_name}-p99-latency"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  threshold           = 5000  # 5 seconds
+
+  metric_name        = "Latency"
+  namespace          = "AWS/ApiGateway"
+  period             = 60
+  extended_statistic = "p99"
+
+  dimensions = {
+    ApiName = aws_api_gateway_rest_api.this.name
+    Stage   = aws_api_gateway_stage.this.stage_name
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+}
+```
+
+### CloudWatch Logs Insights Queries
+
+```
+# Error rate over time
+fields @timestamp, status, routeKey, integrationLatency
+| filter status >= 400
+| stats count() as errors by bin(5min)
+
+# Slowest routes
+fields @timestamp, routeKey, responseLatency
+| stats avg(responseLatency) as avgLatency, max(responseLatency) as maxLatency, count() as requests
+  by routeKey
+| sort avgLatency desc
+
+# Client error breakdown
+fields @timestamp, status, errorMessage
+| filter status >= 400 and status < 500
+| stats count() by status, errorMessage
+
+# Integration latency vs API GW overhead
+fields @timestamp, routeKey,
+  responseLatency - integrationLatency as apigwOverhead,
+  integrationLatency
+| stats avg(apigwOverhead), avg(integrationLatency) by routeKey
+| sort avg(apigwOverhead) desc
+
+# 429 throttle events
+fields @timestamp, sourceIp, routeKey
+| filter status = 429
+| stats count() by sourceIp
+| sort count() desc
+
+# Auth failures
+fields @timestamp, sourceIp, errorMessage
+| filter errorMessage like /Unauthorized|Forbidden|Token/
+| sort @timestamp desc
+```
+
+### CloudWatch Dashboard
+```hcl
+resource "aws_cloudwatch_dashboard" "api" {
+  dashboard_name = "${var.api_name}-dashboard"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "metric"
+        properties = {
+          title   = "Request Count & Error Rate"
+          metrics = [
+            ["AWS/ApiGateway", "Count",    "ApiName", var.api_name, "Stage", var.stage_name, { stat = "Sum" }],
+            ["AWS/ApiGateway", "5XXError", "ApiName", var.api_name, "Stage", var.stage_name, { stat = "Sum", color = "#d62728" }],
+            ["AWS/ApiGateway", "4XXError", "ApiName", var.api_name, "Stage", var.stage_name, { stat = "Sum", color = "#ff7f0e" }],
+          ]
+          period = 60
+          view   = "timeSeries"
+        }
+      },
+      {
+        type = "metric"
+        properties = {
+          title   = "Latency"
+          metrics = [
+            ["AWS/ApiGateway", "Latency",            "ApiName", var.api_name, "Stage", var.stage_name, { stat = "p50", label = "p50" }],
+            ["AWS/ApiGateway", "Latency",            "ApiName", var.api_name, "Stage", var.stage_name, { stat = "p95", label = "p95" }],
+            ["AWS/ApiGateway", "Latency",            "ApiName", var.api_name, "Stage", var.stage_name, { stat = "p99", label = "p99" }],
+            ["AWS/ApiGateway", "IntegrationLatency", "ApiName", var.api_name, "Stage", var.stage_name, { stat = "avg", label = "Integration avg" }],
+          ]
+          period = 60
+        }
+      }
+    ]
+  })
+}
+```
+
+---
+
+## 20. Observability — X-Ray Tracing
+
+### Enable X-Ray (REST API)
+```hcl
+resource "aws_api_gateway_stage" "this" {
+  xray_tracing_enabled = true
+}
+```
+
+### Enable X-Ray (HTTP API)
+```hcl
+resource "aws_apigatewayv2_stage" "this" {
+  # X-Ray not yet native for HTTP API
+  # Use custom tracing via Lambda X-Ray or OpenTelemetry
+}
+```
+
+### X-Ray Context in Lambda
+- When API GW tracing is enabled, it automatically adds `X-Amzn-Trace-Id` header.
+- Lambda X-Ray SDK reads this header and continues the trace.
+- Service map shows: `Client → API Gateway → Lambda → [downstream services]`
+
+### X-Ray Sampling
+```hcl
+resource "aws_xray_sampling_rule" "apigw" {
+  rule_name      = "${var.api_name}-sampling"
+  priority       = 500
+  version        = 1
+  reservoir_size = 10
+  fixed_rate     = 0.05
+  url_path       = "/api/*"
+  host           = "api.example.com"
+  http_method    = "*"
+  service_type   = "AWS::ApiGateway::Stage"
+  service_name   = "${var.api_name}/${var.stage_name}"
+  resource_arn   = "*"
+}
+```
+
+---
+
+## 21. Debugging & Troubleshooting
+
+### Common HTTP Error Codes from API GW
+
+| Code | Source | Common Cause |
+|---|---|---|
+| `400 Bad Request` | API GW | Request validation failed, malformed body |
+| `403 Forbidden` | API GW | Missing/invalid API key; WAF block; resource policy deny; IAM auth failure |
+| `403 Missing Authentication Token` | API GW | Route doesn't exist (not auth issue!) |
+| `404 Not Found` | API GW | Route not found |
+| `429 Too Many Requests` | API GW | Throttled by stage/usage plan |
+| `500 Internal Server Error` | API GW | Integration config error, bad mapping template |
+| `502 Bad Gateway` | API GW | Lambda returned invalid response format |
+| `503 Service Unavailable` | API GW | Lambda throttled / downstream unavailable |
+| `504 Gateway Timeout` | API GW | Integration timed out (> `timeout_milliseconds`) |
+
+### 502 Bad Gateway (Lambda → API GW)
+- Lambda returned invalid JSON or missing required fields.
+- Check Lambda response format:
+```python
+# Correct proxy response format
+return {
+    "statusCode": 200,
+    "headers": {"Content-Type": "application/json"},
+    "body": json.dumps({"message": "ok"}),
+    "isBase64Encoded": False
+}
+```
+- For Format 2.0 (HTTP API), `statusCode` is the only required field.
+
+### 403 "Missing Authentication Token" 
+- **Not** an auth issue — this means the route doesn't exist.
+- Check: route key matches exactly (`GET /users` not `GET /user`).
+- Check: deployment includes the new route.
+- Check: stage URL is correct (includes stage name for REST API).
+
+### Authorizer Debugging
+```
+# Enable authorizer logging
+data_trace_enabled = true  # temporarily
+
+# Check execution log for:
+# - "Token source request-context, method ARN"
+# - "Identity source value"
+# - "Policy validation success/failure"
+```
+
+### Test Invocation (Console / AWS CLI)
+```bash
+# Test REST API method directly
+aws apigateway test-invoke-method \
+  --rest-api-id abc123 \
+  --resource-id xyz789 \
+  --http-method GET \
+  --path-with-query-string '/users/123' \
+  --headers '{"Authorization":"Bearer ..."}' \
+  --body '{}'
+
+# Invoke HTTP API
+curl -X GET \
+  -H "Authorization: Bearer $TOKEN" \
+  "https://abc123.execute-api.us-east-1.amazonaws.com/prod/users"
+
+# Check stage info
+aws apigateway get-stage \
+  --rest-api-id abc123 \
+  --stage-name prod
+
+# List deployments
+aws apigateway get-deployments \
+  --rest-api-id abc123
+```
+
+### VTL Template Debugging
+```bash
+# Test mapping template
+aws apigateway test-invoke-method \
+  --rest-api-id abc123 \
+  --resource-id xyz789 \
+  --http-method POST \
+  --body '{"name":"test"}' \
+  --query 'log'
+```
+
+### Common Deployment Issues
+- **Changes not reflected**: REST API requires new deployment. Check `triggers` hash.
+- **Stage variables not updated**: Stage redeploy needed.
+- **Authorizer still using old TTL cache**: Wait for TTL or flush using API key rotation.
+- **CORS still failing**: Check OPTIONS method exists; check response headers are included on non-OPTIONS responses too.
+
+---
+
+## 22. Cost Model
+
+### REST API Pricing
+- **API calls**: $3.50 per million calls (first 333M/month), tiering down to $1.51.
+- **Data transfer**: Standard EC2 rates.
+- **Cache**: $0.02/hr (0.5 GB) to $3.80/hr (237 GB).
+- **Private API**: $0.01/hr per VPC endpoint + $0.01/GB data processed.
+
+### HTTP API Pricing
+- **API calls**: $1.00 per million calls (first 300M), then $0.90.
+- ~71% cheaper than REST API.
+- No charge for caching (no cache available).
+
+### WebSocket API Pricing
+- **Connection minutes**: $0.29 per million minutes.
+- **Messages**: $1.00 per million messages.
+
+### Cost Optimization
+- Prefer HTTP API over REST API unless you need REST-specific features.
+- Use caching to reduce Lambda invocations.
+- Implement proper throttling to prevent runaway usage.
+- Use CloudFront in front of Regional REST API — CloudFront cheaper per request than edge-optimized.
+- Minimize authorizer invocations with caching (TTL 300s).
+- Use Usage Plans and quotas to cap per-client spending.
+
+---
+
+## 23. Limits & Quotas
+
+| Resource | REST API | HTTP API | Adjustable |
+|---|---|---|---|
+| Regional APIs per account | 600 | 600 | Yes |
+| Max stages per API | 10 | 10 | Yes |
+| Max routes per API | 300 | 300 | Yes |
+| Max integrations per API | 300 | 300 | Yes |
+| Max authorizers per API | 10 | 10 | Yes |
+| Max API keys | 500 | N/A | Yes |
+| Max usage plans | 300 | N/A | Yes |
+| Regional throttle default | 10,000 rps | 10,000 rps | Yes |
+| Regional burst default | 5,000 | 5,000 | Yes |
+| Max timeout | 29 sec | 29 sec | No |
+| Max payload (REST) | 10 MB | 10 MB | No |
+| Max mapping template size | 300 KB | N/A | No |
+| Max Lambda authorizer response size | 8 KB | 8 KB | No |
+| Max custom domain names | 120 | 120 | Yes |
+| Max VPC links | 20 | 20 | Yes |
+| Max stages per domain | 200 | 200 | No |
+| WebSocket frame size | 32 KB | N/A | No |
+| WebSocket message size (accumulated) | 128 KB | N/A | No |
+| WebSocket connection duration | 2 hours | N/A | No |
+| WebSocket idle timeout | 10 minutes | N/A | No |
+
+---
+
+## 24. Security Best Practices
+
+### Authentication
+- Always require auth on production endpoints — no `authorization = "NONE"` unless truly public.
+- Prefer JWT (Cognito) over custom Lambda authorizers when possible — faster, cheaper, more scalable.
+- Cache authorizer responses (TTL 300s) to reduce Lambda invocations.
+- Validate JWT scopes at the route level for fine-grained access control.
+
+### Rate Limiting & DDoS
+- Set stage-level throttle limits.
+- Use WAF with managed rule groups (AWSManagedRulesCommonRuleSet, AWSManagedRulesKnownBadInputsRuleSet).
+- Add WAF rate-based rules per IP.
+- Use AWS Shield Advanced for critical APIs.
+
+### Encryption & TLS
+- Enforce `TLS_1_2` security policy on custom domains.
+- Use mTLS for machine-to-machine API clients.
+- Encrypt CloudWatch logs with KMS.
+- Encrypt cache with `cache_data_encrypted = true`.
+
+### Least Privilege
+- Scope Lambda permissions to specific API GW execution ARN.
+- Use resource policies on Private APIs to restrict VPC endpoint access.
+- Scope IAM authorizer roles to specific APIs/authorizers.
+
+### Input Validation
+- Enable request validators (body + parameters) — catch bad input before Lambda.
+- Define JSON schema models for all request bodies.
+- Sanitize and validate in Lambda too (defense in depth).
+
+### API Key Security
+- API keys are not authentication — they are metering/quota tools.
+- Combine API keys with Cognito/Lambda auth for both metering and identity.
+- Rotate API keys regularly; never embed in client-side code.
+
+---
+
+## 25. Terraform Full Resource Reference
+
+### Complete HTTP API Module
+
+```hcl
+##############################################
+# variables.tf
+##############################################
+variable "api_name"           { type = string }
+variable "description"        { default = "" }
+variable "stage_name"         { default = "prod" }
+variable "environment"        { type = string }
+variable "log_retention_days" { default = 30 }
+variable "enable_xray"        { default = true }
+variable "throttle_burst"     { default = 5000 }
+variable "throttle_rate"      { default = 10000 }
+variable "cors_origins"       { default = ["*"] }
+variable "lambda_invoke_arn"  { type = string }
+variable "lambda_function_name" { type = string }
+variable "cognito_user_pool_arn"      { type = string }
+variable "cognito_user_pool_client_id"{ type = string }
+variable "cognito_issuer_url"         { type = string }
+variable "kms_key_arn"        { default = null }
+variable "tags"               { default = {} }
+
+##############################################
+# main.tf — HTTP API (v2)
+##############################################
+
+# --- API ---
+resource "aws_apigatewayv2_api" "this" {
+  name          = var.api_name
+  protocol_type = "HTTP"
+  description   = var.description
+
+  cors_configuration {
+    allow_origins     = var.cors_origins
+    allow_methods     = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+    allow_headers     = ["Content-Type", "Authorization", "X-Api-Key", "X-Amz-Date", "X-Amz-Security-Token"]
+    expose_headers    = ["X-Request-Id"]
+    allow_credentials = length(var.cors_origins) == 1 && var.cors_origins[0] == "*" ? false : true
+    max_age           = 86400
+  }
+
+  tags = var.tags
+}
+
+# --- JWT Authorizer ---
+resource "aws_apigatewayv2_authorizer" "jwt" {
+  api_id           = aws_apigatewayv2_api.this.id
+  authorizer_type  = "JWT"
+  name             = "cognito-jwt"
+  identity_sources = ["$request.header.Authorization"]
+
+  jwt_configuration {
+    audience = [var.cognito_user_pool_client_id]
+    issuer   = var.cognito_issuer_url
+  }
+}
+
+# --- Lambda Integration ---
+resource "aws_apigatewayv2_integration" "lambda" {
+  api_id                 = aws_apigatewayv2_api.this.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = var.lambda_invoke_arn
+  payload_format_version = "2.0"
+  timeout_milliseconds   = 29000
+}
+
+# --- Routes ---
+resource "aws_apigatewayv2_route" "get_users" {
+  api_id             = aws_apigatewayv2_api.this.id
+  route_key          = "GET /users"
+  target             = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.jwt.id
+}
+
+resource "aws_apigatewayv2_route" "default" {
+  api_id    = aws_apigatewayv2_api.this.id
+  route_key = "$default"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+}
+
+# --- Lambda Permission ---
+resource "aws_lambda_permission" "apigw" {
+  statement_id  = "AllowAPIGWInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = var.lambda_function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*"
+}
+
+# --- Logging ---
+resource "aws_cloudwatch_log_group" "access" {
+  name              = "/aws/apigateway/${var.api_name}/access"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = var.kms_key_arn
+  tags              = var.tags
+}
+
+# --- Stage ---
+resource "aws_apigatewayv2_stage" "this" {
+  api_id      = aws_apigatewayv2_api.this.id
+  name        = var.stage_name
+  auto_deploy = true
+
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.access.arn
+  }
+
+  default_route_settings {
+    throttling_burst_limit   = var.throttle_burst
+    throttling_rate_limit    = var.throttle_rate
+    detailed_metrics_enabled = true
+  }
+
+  stage_variables = {
+    env = var.environment
+  }
+
+  tags = var.tags
+}
+
+# --- Custom Domain ---
+resource "aws_apigatewayv2_domain_name" "this" {
+  count       = var.custom_domain != "" ? 1 : 0
+  domain_name = var.custom_domain
+
+  domain_name_configuration {
+    certificate_arn = var.certificate_arn
+    endpoint_type   = "REGIONAL"
+    security_policy = "TLS_1_2"
+  }
+
+  tags = var.tags
+}
+
+resource "aws_apigatewayv2_api_mapping" "this" {
+  count       = var.custom_domain != "" ? 1 : 0
+  api_id      = aws_apigatewayv2_api.this.id
+  domain_name = aws_apigatewayv2_domain_name.this[0].id
+  stage       = aws_apigatewayv2_stage.this.id
+}
+
+# --- Alarms ---
+resource "aws_cloudwatch_metric_alarm" "5xx" {
+  alarm_name          = "${var.api_name}-5xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "5XXError"
+  namespace           = "AWS/ApiGateway"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    ApiId = aws_apigatewayv2_api.this.id
+    Stage = aws_apigatewayv2_stage.this.name
+  }
+  alarm_actions = [var.alert_sns_arn]
+  tags          = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "4xx" {
+  alarm_name          = "${var.api_name}-4xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "4XXError"
+  namespace           = "AWS/ApiGateway"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 50
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    ApiId = aws_apigatewayv2_api.this.id
+    Stage = aws_apigatewayv2_stage.this.name
+  }
+  alarm_actions = [var.alert_sns_arn]
+  tags          = var.tags
+}
+
+##############################################
+# outputs.tf
+##############################################
+output "api_id"           { value = aws_apigatewayv2_api.this.id }
+output "api_arn"          { value = aws_apigatewayv2_api.this.arn }
+output "execution_arn"    { value = aws_apigatewayv2_api.this.execution_arn }
+output "invoke_url"       { value = aws_apigatewayv2_stage.this.invoke_url }
+output "stage_arn"        { value = aws_apigatewayv2_stage.this.arn }
+output "log_group_name"   { value = aws_cloudwatch_log_group.access.name }
+output "authorizer_id"    { value = aws_apigatewayv2_authorizer.jwt.id }
+output "custom_domain_target" {
+  value = length(aws_apigatewayv2_domain_name.this) > 0 ?
+    aws_apigatewayv2_domain_name.this[0].domain_name_configuration[0].target_domain_name : null
+}
+```
+
+---
+
+### Terraform Resource Quick Reference Table
+
+| Resource | API Type | Purpose |
+|---|---|---|
+| `aws_apigatewayv2_api` | HTTP + WebSocket | Create HTTP or WebSocket API |
+| `aws_apigatewayv2_route` | HTTP + WebSocket | Route key → integration mapping |
+| `aws_apigatewayv2_integration` | HTTP + WebSocket | Backend integration config |
+| `aws_apigatewayv2_stage` | HTTP + WebSocket | Stage with logging, throttle, auto_deploy |
+| `aws_apigatewayv2_authorizer` | HTTP | JWT or Lambda authorizer |
+| `aws_apigatewayv2_domain_name` | HTTP + WebSocket | Custom domain config |
+| `aws_apigatewayv2_api_mapping` | HTTP + WebSocket | Map API+stage to custom domain path |
+| `aws_apigatewayv2_vpc_link` | HTTP | VPC Link to ALB/NLB/Cloud Map |
+| `aws_api_gateway_rest_api` | REST | Create REST API |
+| `aws_api_gateway_resource` | REST | URL path resource |
+| `aws_api_gateway_method` | REST | HTTP method on resource |
+| `aws_api_gateway_integration` | REST | Backend integration |
+| `aws_api_gateway_integration_response` | REST | Map integration response |
+| `aws_api_gateway_method_response` | REST | Define method response codes/headers |
+| `aws_api_gateway_deployment` | REST | Immutable deployment snapshot |
+| `aws_api_gateway_stage` | REST | Stage attached to deployment |
+| `aws_api_gateway_method_settings` | REST | Per-method throttle, logging, cache |
+| `aws_api_gateway_authorizer` | REST | Lambda or Cognito authorizer |
+| `aws_api_gateway_request_validator` | REST | Validate body/params |
+| `aws_api_gateway_model` | REST | JSON Schema model |
+| `aws_api_gateway_api_key` | REST | API key |
+| `aws_api_gateway_usage_plan` | REST | Throttle + quota per key group |
+| `aws_api_gateway_usage_plan_key` | REST | Associate key with usage plan |
+| `aws_api_gateway_domain_name` | REST | Custom domain |
+| `aws_api_gateway_base_path_mapping` | REST | Map stage to domain path |
+| `aws_api_gateway_vpc_link` | REST | VPC Link to NLB |
+| `aws_api_gateway_account` | REST | Account-level CW log role |
+| `aws_api_gateway_gateway_response` | REST | Customize GW error responses |
+| `aws_lambda_permission` | All | Allow API GW to invoke Lambda |
+| `aws_wafv2_web_acl` | All | WAF rules |
+| `aws_wafv2_web_acl_association` | All | Attach WAF to stage |
+| `aws_cloudwatch_log_group` | All | Access/execution log group |
+| `aws_cloudwatch_metric_alarm` | All | 4XX, 5XX, latency alarms |
+| `aws_cloudwatch_dashboard` | All | Operational dashboard |
+| `aws_xray_sampling_rule` | REST | X-Ray sampling config |
+| `aws_route53_record` | All | DNS alias to API GW endpoint |
+| `aws_acm_certificate` | All | TLS cert for custom domain |
+
+### Gateway Responses (REST API — customize error messages)
+```hcl
+resource "aws_api_gateway_gateway_response" "unauthorized" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  response_type = "UNAUTHORIZED"
+  status_code   = "401"
+
+  response_parameters = {
+    "gatewayresponse.header.Access-Control-Allow-Origin" = "'*'"
+    "gatewayresponse.header.WWW-Authenticate"            = "'Bearer'"
+  }
+
+  response_templates = {
+    "application/json" = jsonencode({
+      error   = "Unauthorized"
+      message = "Valid authentication credentials required"
     })
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "high_5xx" {
-  alarm_name          = "orders-api-prod-5xx"
-  namespace           = "AWS/ApiGateway"
-  metric_name         = "5XXError"
-  statistic           = "Sum"
-  period              = 60
-  evaluation_periods  = 1
-  threshold           = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
+resource "aws_api_gateway_gateway_response" "throttled" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  response_type = "THROTTLED"
+  status_code   = "429"
 
-  dimensions = {
-    ApiName = aws_api_gateway_rest_api.this.name
-    Stage   = aws_api_gateway_stage.prod.stage_name
+  response_templates = {
+    "application/json" = jsonencode({
+      error   = "TooManyRequests"
+      message = "Rate limit exceeded. Please retry after backoff."
+    })
   }
 }
+
+# All gateway response types:
+# ACCESS_DENIED, API_CONFIGURATION_ERROR, AUTHORIZER_CONFIGURATION_ERROR,
+# AUTHORIZER_FAILURE, BAD_REQUEST_BODY, BAD_REQUEST_PARAMETERS,
+# DEFAULT_4XX, DEFAULT_5XX, EXPIRED_TOKEN, INTEGRATION_FAILURE,
+# INTEGRATION_TIMEOUT, INVALID_API_KEY, INVALID_SIGNATURE,
+# MISSING_AUTHENTICATION_TOKEN, QUOTA_EXCEEDED, REQUEST_TOO_LARGE,
+# RESOURCE_NOT_FOUND, THROTTLED, UNAUTHORIZED, UNSUPPORTED_MEDIA_TYPE,
+# WAF_FILTERED
 ```
 
 ---
 
-Use these notes as the canonical engineering reference for REST API design in this repository. Revisit limits/pricing periodically because AWS updates both.
+*Last updated: February 2026*
+*Next: DynamoDB, SQS, EventBridge, Step Functions, ECS, RDS, ElastiCache*
