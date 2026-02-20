@@ -17,11 +17,121 @@ locals {
     if try(alarm.enabled, true)
   }
 
+  observability_enabled = try(var.observability.enabled, false)
+
+  default_metric_alarms = local.observability_enabled && try(var.observability.enable_default_alarms, true) ? {
+    errors = {
+      enabled             = true
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 1
+      metric_name         = "Errors"
+      namespace           = "AWS/Lambda"
+      period              = 60
+      statistic           = "Sum"
+      threshold           = 1
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = try(var.observability.default_alarm_actions, [])
+      ok_actions          = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions          = {}
+      tags                = {}
+    }
+    throttles = {
+      enabled             = true
+      comparison_operator = "GreaterThanThreshold"
+      evaluation_periods  = 1
+      metric_name         = "Throttles"
+      namespace           = "AWS/Lambda"
+      period              = 60
+      statistic           = "Sum"
+      threshold           = 0
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = try(var.observability.default_alarm_actions, [])
+      ok_actions          = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions          = {}
+      tags                = {}
+    }
+    duration_p95 = {
+      enabled             = true
+      comparison_operator = "GreaterThanThreshold"
+      evaluation_periods  = 3
+      metric_name         = "Duration"
+      namespace           = "AWS/Lambda"
+      period              = 60
+      extended_statistic  = "p95"
+      threshold           = 500
+      treat_missing_data  = "notBreaching"
+      alarm_actions       = try(var.observability.default_alarm_actions, [])
+      ok_actions          = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions          = {}
+      tags                = {}
+    }
+  } : {}
+
+  effective_metric_alarms = merge(local.default_metric_alarms, var.metric_alarms)
+
+  enabled_metric_alarms = {
+    for alarm_key, alarm in local.effective_metric_alarms :
+    alarm_key => alarm
+    if try(alarm.enabled, true)
+  }
+
+  default_metric_anomaly_alarms = local.observability_enabled && try(var.observability.enable_anomaly_detection_alarms, false) ? {
+    invocations_anomaly = {
+      enabled                  = true
+      comparison_operator      = "GreaterThanUpperThreshold"
+      evaluation_periods       = 2
+      metric_name              = "Invocations"
+      namespace                = "AWS/Lambda"
+      period                   = 300
+      statistic                = "Sum"
+      anomaly_detection_stddev = 2
+      treat_missing_data       = "notBreaching"
+      alarm_actions            = try(var.observability.default_alarm_actions, [])
+      ok_actions               = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions               = {}
+      tags                     = {}
+    }
+    duration_anomaly = {
+      enabled                  = true
+      comparison_operator      = "GreaterThanUpperThreshold"
+      evaluation_periods       = 2
+      metric_name              = "Duration"
+      namespace                = "AWS/Lambda"
+      period                   = 300
+      statistic                = "Average"
+      anomaly_detection_stddev = 2
+      treat_missing_data       = "notBreaching"
+      alarm_actions            = try(var.observability.default_alarm_actions, [])
+      ok_actions               = try(var.observability.default_ok_actions, [])
+      insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
+      dimensions               = {}
+      tags                     = {}
+    }
+  } : {}
+
+  effective_metric_anomaly_alarms = merge(local.default_metric_anomaly_alarms, var.metric_anomaly_alarms)
+
+  enabled_metric_anomaly_alarms = {
+    for alarm_key, alarm in local.effective_metric_anomaly_alarms :
+    alarm_key => alarm
+    if try(alarm.enabled, true)
+  }
+
   enabled_dlq_log_metric_filters = {
     for filter_key, filter in var.dlq_log_metric_filters :
     filter_key => filter
     if try(filter.enabled, true)
   }
+}
+
+data "aws_cloudwatch_log_group" "lambda_existing" {
+  count = !var.create_cloudwatch_log_group && length(local.enabled_dlq_log_metric_filters) > 0 ? 1 : 0
+
+  name = local.log_group_name
 }
 
 resource "aws_iam_role" "lambda_role" {
@@ -144,7 +254,7 @@ resource "aws_lambda_function" "this" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "lambda" {
-  for_each = var.metric_alarms
+  for_each = local.enabled_metric_alarms
 
   alarm_name          = coalesce(try(each.value.alarm_name, null), "${var.function_name}-${each.key}")
   alarm_description   = try(each.value.alarm_description, null)
@@ -164,9 +274,52 @@ resource "aws_cloudwatch_metric_alarm" "lambda" {
   insufficient_data_actions = try(each.value.insufficient_data_actions, [])
 
   dimensions = merge(
-    { FunctionName = aws_lambda_function.this.function_name },
-    try(each.value.dimensions, {})
+    try(each.value.dimensions, {}),
+    { FunctionName = aws_lambda_function.this.function_name }
   )
+
+  tags = merge(var.tags, try(each.value.tags, {}), {
+    Name = coalesce(try(each.value.alarm_name, null), "${var.function_name}-${each.key}")
+  })
+}
+
+resource "aws_cloudwatch_metric_alarm" "lambda_anomaly" {
+  for_each = local.enabled_metric_anomaly_alarms
+
+  alarm_name          = coalesce(try(each.value.alarm_name, null), "${var.function_name}-${each.key}")
+  alarm_description   = try(each.value.alarm_description, null)
+  comparison_operator = try(each.value.comparison_operator, "GreaterThanUpperThreshold")
+  evaluation_periods  = each.value.evaluation_periods
+  threshold_metric_id = "ad1"
+
+  datapoints_to_alarm       = try(each.value.datapoints_to_alarm, null)
+  treat_missing_data        = try(each.value.treat_missing_data, null)
+  alarm_actions             = try(each.value.alarm_actions, [])
+  ok_actions                = try(each.value.ok_actions, [])
+  insufficient_data_actions = try(each.value.insufficient_data_actions, [])
+
+  metric_query {
+    id          = "m1"
+    return_data = true
+
+    metric {
+      metric_name = each.value.metric_name
+      namespace   = try(each.value.namespace, "AWS/Lambda")
+      period      = each.value.period
+      stat        = each.value.statistic
+      dimensions = merge(
+        try(each.value.dimensions, {}),
+        { FunctionName = aws_lambda_function.this.function_name }
+      )
+    }
+  }
+
+  metric_query {
+    id          = "ad1"
+    expression  = "ANOMALY_DETECTION_BAND(m1, ${try(each.value.anomaly_detection_stddev, 2)})"
+    label       = "${coalesce(try(each.value.alarm_name, null), "${var.function_name}-${each.key}")}-band"
+    return_data = true
+  }
 
   tags = merge(var.tags, try(each.value.tags, {}), {
     Name = coalesce(try(each.value.alarm_name, null), "${var.function_name}-${each.key}")
@@ -238,6 +391,11 @@ resource "aws_cloudwatch_log_metric_filter" "dlq" {
     precondition {
       condition     = var.dead_letter_target_arn != null
       error_message = "dead_letter_target_arn must be set when using dlq_log_metric_filters."
+    }
+
+    precondition {
+      condition     = var.create_cloudwatch_log_group || try(data.aws_cloudwatch_log_group.lambda_existing[0].name, null) != null
+      error_message = "When create_cloudwatch_log_group=false and dlq_log_metric_filters are configured, the log group /aws/lambda/<function_name> must already exist."
     }
   }
 }

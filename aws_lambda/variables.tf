@@ -290,9 +290,30 @@ variable "tracing_mode" {
   }
 }
 
+variable "observability" {
+  description = "High-level observability toggles to avoid manual per-feature alarm setup."
+  type = object({
+    enabled                         = optional(bool, false)
+    enable_default_alarms           = optional(bool, true)
+    enable_anomaly_detection_alarms = optional(bool, false)
+    default_alarm_actions           = optional(list(string), [])
+    default_ok_actions              = optional(list(string), [])
+    default_insufficient_data_actions = optional(list(string), [])
+  })
+  default = {
+    enabled                         = false
+    enable_default_alarms           = true
+    enable_anomaly_detection_alarms = false
+    default_alarm_actions           = []
+    default_ok_actions              = []
+    default_insufficient_data_actions = []
+  }
+}
+
 variable "metric_alarms" {
   description = "Map of CloudWatch metric alarms keyed by logical alarm key."
   type = map(object({
+    enabled                  = optional(bool, true)
     alarm_name               = optional(string)
     alarm_description        = optional(string)
     comparison_operator      = string
@@ -319,6 +340,66 @@ variable "metric_alarms" {
       ((try(alarm.statistic, null) != null) != (try(alarm.extended_statistic, null) != null))
     ])
     error_message = "Each metric_alarms entry must set exactly one of statistic or extended_statistic."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.metric_alarms) :
+      try(alarm.treat_missing_data, null) == null || contains(["breaching", "notBreaching", "ignore", "missing"], alarm.treat_missing_data)
+    ])
+    error_message = "metric_alarms[*].treat_missing_data must be one of breaching, notBreaching, ignore, missing."
+  }
+}
+
+variable "metric_anomaly_alarms" {
+  description = "Map of CloudWatch anomaly detection alarms keyed by logical alarm key. Each alarm uses ANOMALY_DETECTION_BAND with FunctionName dimension injected by default."
+  type = map(object({
+    enabled                    = optional(bool, true)
+    alarm_name                 = optional(string)
+    alarm_description          = optional(string)
+    comparison_operator        = optional(string, "GreaterThanUpperThreshold")
+    evaluation_periods         = number
+    metric_name                = string
+    namespace                  = optional(string, "AWS/Lambda")
+    period                     = number
+    statistic                  = string
+    anomaly_detection_stddev   = optional(number, 2)
+    datapoints_to_alarm        = optional(number)
+    treat_missing_data         = optional(string)
+    alarm_actions              = optional(list(string), [])
+    ok_actions                 = optional(list(string), [])
+    insufficient_data_actions  = optional(list(string), [])
+    dimensions                 = optional(map(string), {})
+    tags                       = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.metric_anomaly_alarms) :
+      contains([
+        "GreaterThanUpperThreshold",
+        "LessThanLowerThreshold",
+        "LessThanLowerOrGreaterThanUpperThreshold"
+      ], try(alarm.comparison_operator, "GreaterThanUpperThreshold"))
+    ])
+    error_message = "metric_anomaly_alarms[*].comparison_operator must be GreaterThanUpperThreshold, LessThanLowerThreshold, or LessThanLowerOrGreaterThanUpperThreshold."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.metric_anomaly_alarms) :
+      try(alarm.treat_missing_data, null) == null || contains(["breaching", "notBreaching", "ignore", "missing"], alarm.treat_missing_data)
+    ])
+    error_message = "metric_anomaly_alarms[*].treat_missing_data must be one of breaching, notBreaching, ignore, missing."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.metric_anomaly_alarms) :
+      try(alarm.anomaly_detection_stddev, 2) > 0
+    ])
+    error_message = "metric_anomaly_alarms[*].anomaly_detection_stddev must be greater than 0."
   }
 }
 

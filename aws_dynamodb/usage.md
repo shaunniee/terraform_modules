@@ -17,9 +17,10 @@ This module creates one `aws_dynamodb_table` resource and supports:
 - Deletion protection
 - Table class selection
 - Global Tables replicas (multi-region)
-- Dynamic CloudWatch metric alarms
+- Dynamic CloudWatch metric alarms (including default presets)
+- CloudWatch anomaly detection alarms
 - Contributor Insights (table and GSI) for hot-key tracing/analysis
-- Optional CloudTrail data-event logging for table audit logs
+- Optional CloudTrail data-event logging for table audit logs (with optional CloudWatch Logs + KMS)
 - Input validation and lifecycle preconditions for safer plans
 
 ---
@@ -216,6 +217,45 @@ module "dynamodb_events" {
 
 ### 5) Observability (Logging, Metrics, Alarms, Tracing)
 
+Boolean-first setup (recommended):
+
+```hcl
+module "dynamodb_orders" {
+  source = "./aws_dynamodb"
+
+  table_name = "orders"
+  hash_key   = "pk"
+  range_key  = "sk"
+
+  billing_mode = "PAY_PER_REQUEST"
+
+  attributes = [
+    { name = "pk", type = "S" },
+    { name = "sk", type = "S" }
+  ]
+
+  observability = {
+    enabled                                         = true
+    enable_default_alarms                           = true
+    enable_anomaly_detection_alarms                 = true
+    enable_contributor_insights_table               = true
+    enable_contributor_insights_all_global_secondary_indexes = true
+    enable_cloudtrail_data_events                   = true
+    cloudtrail_s3_bucket_name                       = "my-cloudtrail-audit-logs"
+    default_alarm_actions                           = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+  }
+
+  cloudtrail_data_events = {
+    cloud_watch_logs_enabled          = true
+    create_cloud_watch_logs_role      = true
+    cloud_watch_logs_retention_in_days = 90
+    kms_key_id                        = "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555"
+  }
+}
+```
+
+Fully custom setup (advanced):
+
 ```hcl
 module "dynamodb_orders" {
   source = "./aws_dynamodb"
@@ -255,6 +295,19 @@ module "dynamodb_orders" {
     }
   }
 
+  cloudwatch_metric_anomaly_alarms = {
+    read_capacity_anomaly = {
+      comparison_operator      = "GreaterThanUpperThreshold"
+      evaluation_periods       = 2
+      metric_name              = "ConsumedReadCapacityUnits"
+      period                   = 300
+      statistic                = "Sum"
+      anomaly_detection_stddev = 2
+      treat_missing_data       = "notBreaching"
+      alarm_actions            = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+    }
+  }
+
   contributor_insights = {
     table_enabled                         = true
     all_global_secondary_indexes_enabled = true
@@ -265,14 +318,198 @@ module "dynamodb_orders" {
     trail_name     = "orders-dynamodb-audit"
     s3_bucket_name = "my-cloudtrail-audit-logs"
     read_write_type = "All"
+    kms_key_id      = "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555"
+    cloud_watch_logs_enabled = true
+    create_cloud_watch_logs_role = false
+    cloud_watch_logs_role_arn = "arn:aws:iam::123456789012:role/external-cloudtrail-cwlogs"
+    cloud_watch_logs_group_name = "/aws/cloudtrail/orders-data-events"
   }
 }
 ```
 
 Notes:
 - Metrics/alarms: module injects `TableName=<table name>` into alarm dimensions.
+- Preset alarms: when `observability.enabled = true` and `observability.enable_default_alarms = true`, defaults are created for `ThrottledRequests`, `UserErrors`, `SystemErrors`, and `SuccessfulRequestLatency` (p95).
+- Anomaly alarms: use CloudWatch `ANOMALY_DETECTION_BAND` via `cloudwatch_metric_anomaly_alarms`.
 - Tracing/insights: DynamoDB does not support native X-Ray segment tracing for table operations; Contributor Insights is the closest built-in per-table/per-GSI hot-key analysis feature.
-- Logging: CloudTrail data events provide API audit logging for table reads/writes.
+- Logging: CloudTrail data events provide API audit logging for table reads/writes, with optional CloudWatch Logs delivery.
+- IAM mode for CloudTrail -> CloudWatch Logs is explicit: set `create_cloud_watch_logs_role = true` to let the module create role/policy, or set it to `false` and provide `cloud_watch_logs_role_arn` from external IAM.
+- Contributor Insights precedence: if `contributor_insights` is explicitly configured, it is respected; observability booleans apply defaults only when `contributor_insights` is not explicitly set.
+
+### 6) Observability combination reference
+
+Use this section as a quick chooser. Assume standard required table inputs are already set (`table_name`, `hash_key`, `attributes`, etc.).
+
+| Combination | `observability` block | Additional blocks | When to use |
+|---|---|---|---|
+| No observability | omit or `enabled = false` | none | App/dev environments where external tooling handles everything |
+| Preset alarms only | `enabled = true`, `enable_default_alarms = true` | optional shared actions | Fast baseline alerts |
+| Preset + custom alarm override | same as above | `cloudwatch_metric_alarms` for overrides/additions | Keep defaults, tune specific thresholds |
+| Anomaly alarms only | `enabled = true`, `enable_default_alarms = false`, `enable_anomaly_detection_alarms = true` | optional `cloudwatch_metric_anomaly_alarms` | Dynamic baselines for variable traffic |
+| Contributor Insights only | `enabled = true`, CI booleans true, others false | optional `contributor_insights` | Hot-partition / hot-key analysis only |
+| CloudTrail only (S3) | `enabled = true`, `enable_cloudtrail_data_events = true` | `cloudtrail_data_events` with S3 values | API audit logs without CW Logs |
+| CloudTrail + CW Logs (module IAM) | same as above | `cloudtrail_data_events.cloud_watch_logs_enabled = true`, `create_cloud_watch_logs_role = true` | One-module setup |
+| CloudTrail + CW Logs (external IAM) | same as above | `create_cloud_watch_logs_role = false`, pass `cloud_watch_logs_role_arn` | Centralized IAM ownership |
+
+#### A) No observability
+
+```hcl
+observability = {
+  enabled = false
+}
+```
+
+#### B) Preset alarms only (boolean-first)
+
+```hcl
+observability = {
+  enabled                   = true
+  enable_default_alarms     = true
+  enable_anomaly_detection_alarms = false
+  enable_contributor_insights_table = false
+  enable_contributor_insights_all_global_secondary_indexes = false
+  enable_cloudtrail_data_events = false
+  default_alarm_actions = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+}
+```
+
+#### C) Preset alarms + override one threshold + add custom metric alarm
+
+```hcl
+observability = {
+  enabled               = true
+  enable_default_alarms = true
+}
+
+cloudwatch_metric_alarms = {
+  throttled_requests = {
+    comparison_operator = "GreaterThanOrEqualToThreshold"
+    evaluation_periods  = 1
+    metric_name         = "ThrottledRequests"
+    period              = 60
+    statistic           = "Sum"
+    threshold           = 5
+    treat_missing_data  = "notBreaching"
+  }
+
+  conditional_check_failed = {
+    comparison_operator = "GreaterThanOrEqualToThreshold"
+    evaluation_periods  = 1
+    metric_name         = "ConditionalCheckFailedRequests"
+    period              = 60
+    statistic           = "Sum"
+    threshold           = 20
+    treat_missing_data  = "notBreaching"
+  }
+}
+```
+
+#### D) Anomaly alarms only
+
+```hcl
+observability = {
+  enabled                         = true
+  enable_default_alarms           = false
+  enable_anomaly_detection_alarms = true
+  enable_cloudtrail_data_events   = false
+}
+```
+
+#### E) Contributor Insights only (selected GSIs)
+
+```hcl
+observability = {
+  enabled       = true
+  enable_default_alarms = false
+  enable_anomaly_detection_alarms = false
+  enable_contributor_insights_table = true
+  enable_contributor_insights_all_global_secondary_indexes = false
+  enable_cloudtrail_data_events = false
+}
+
+contributor_insights = {
+  table_enabled                 = true
+  global_secondary_index_names = ["gsi_category", "gsi_status"]
+}
+```
+
+#### F) CloudTrail data events only (S3 audit)
+
+```hcl
+observability = {
+  enabled                       = true
+  enable_default_alarms         = false
+  enable_anomaly_detection_alarms = false
+  enable_contributor_insights_table = false
+  enable_cloudtrail_data_events = true
+  cloudtrail_s3_bucket_name     = "my-cloudtrail-audit-logs"
+}
+
+cloudtrail_data_events = {
+  read_write_type = "All"
+}
+```
+
+#### G) CloudTrail + CloudWatch Logs with module-managed IAM role
+
+```hcl
+observability = {
+  enabled                       = true
+  enable_cloudtrail_data_events = true
+  cloudtrail_s3_bucket_name     = "my-cloudtrail-audit-logs"
+}
+
+cloudtrail_data_events = {
+  cloud_watch_logs_enabled      = true
+  create_cloud_watch_logs_role  = true
+  cloud_watch_logs_retention_in_days = 90
+}
+```
+
+#### H) CloudTrail + CloudWatch Logs with external IAM role
+
+```hcl
+observability = {
+  enabled                       = true
+  enable_cloudtrail_data_events = true
+  cloudtrail_s3_bucket_name     = "my-cloudtrail-audit-logs"
+}
+
+cloudtrail_data_events = {
+  cloud_watch_logs_enabled = true
+  create_cloud_watch_logs_role = false
+  cloud_watch_logs_role_arn = "arn:aws:iam::123456789012:role/external-cloudtrail-cwlogs"
+  cloud_watch_logs_group_name = "/aws/cloudtrail/orders-data-events"
+}
+```
+
+#### I) Full explicit mode (no `observability` block)
+
+```hcl
+cloudwatch_metric_alarms = {
+  throttled_requests = {
+    comparison_operator = "GreaterThanOrEqualToThreshold"
+    evaluation_periods  = 1
+    metric_name         = "ThrottledRequests"
+    period              = 60
+    statistic           = "Sum"
+    threshold           = 1
+  }
+}
+
+contributor_insights = {
+  table_enabled                         = true
+  all_global_secondary_indexes_enabled = true
+}
+
+cloudtrail_data_events = {
+  enabled            = true
+  s3_bucket_name     = "my-cloudtrail-audit-logs"
+  cloud_watch_logs_enabled = true
+  create_cloud_watch_logs_role = false
+  cloud_watch_logs_role_arn = "arn:aws:iam::123456789012:role/external-cloudtrail-cwlogs"
+}
+```
 
 ---
 
@@ -305,9 +542,11 @@ Notes:
 | `deletion_protection_enabled` | `bool` | `false` | Enable deletion protection |
 | `table_class` | `string` | `"STANDARD"` | `STANDARD` or `STANDARD_INFREQUENT_ACCESS` |
 | `tags` | `map(string)` | `{}` | Tags to apply |
+| `observability` | `object({ enabled, enable_default_alarms, enable_anomaly_detection_alarms, enable_contributor_insights_table, enable_contributor_insights_all_global_secondary_indexes, enable_cloudtrail_data_events, cloudtrail_s3_bucket_name, default_alarm_actions, default_ok_actions, default_insufficient_data_actions })` | disabled | Boolean-first observability toggles and shared alarm actions |
 | `cloudwatch_metric_alarms` | `map(object(...))` | `{}` | CloudWatch metric alarms for DynamoDB table metrics |
+| `cloudwatch_metric_anomaly_alarms` | `map(object(...))` | `{}` | CloudWatch anomaly detection alarms for DynamoDB table metrics |
 | `contributor_insights` | `object({ table_enabled, all_global_secondary_indexes_enabled, global_secondary_index_names })` | `{ table_enabled = false, all_global_secondary_indexes_enabled = false, global_secondary_index_names = [] }` | Contributor Insights tracing/analysis settings |
-| `cloudtrail_data_events` | `object({ enabled, trail_name, s3_bucket_name, include_management_events, read_write_type, tags })` | disabled | CloudTrail data-event logging settings for table audit logs |
+| `cloudtrail_data_events` | `object({ enabled, trail_name, s3_bucket_name, kms_key_id, enable_log_file_validation, include_management_events, read_write_type, cloud_watch_logs_enabled, create_cloud_watch_logs_role, cloud_watch_logs_group_name, cloud_watch_logs_retention_in_days, cloud_watch_logs_role_arn, tags })` | disabled | CloudTrail data-event logging settings for table audit logs |
 
 ---
 
@@ -326,10 +565,14 @@ Notes:
 | `replica_regions` | Replica regions reported by AWS |
 | `cloudwatch_metric_alarm_arns` | Map of alarm ARNs keyed by `cloudwatch_metric_alarms` key |
 | `cloudwatch_metric_alarm_names` | Map of alarm names keyed by `cloudwatch_metric_alarms` key |
+| `cloudwatch_metric_anomaly_alarm_arns` | Map of anomaly alarm ARNs keyed by `cloudwatch_metric_anomaly_alarms` key |
+| `cloudwatch_metric_anomaly_alarm_names` | Map of anomaly alarm names keyed by `cloudwatch_metric_anomaly_alarms` key |
 | `contributor_insights_table_enabled` | Whether table Contributor Insights is enabled |
 | `contributor_insights_gsi_names` | GSI names with Contributor Insights enabled |
 | `cloudtrail_data_events_trail_arn` | CloudTrail ARN when data-event logging is enabled |
 | `cloudtrail_data_events_trail_name` | CloudTrail name when data-event logging is enabled |
+| `cloudtrail_data_events_cloudwatch_log_group_name` | CloudWatch Log Group name used by CloudTrail logs delivery |
+| `cloudtrail_data_events_cloudwatch_logs_role_arn` | IAM role ARN used by CloudTrail to publish into CloudWatch Logs |
 
 ---
 
@@ -365,6 +608,7 @@ The module enforces input correctness with both variable validation and resource
 
 - Attribute types must be one of `S`, `N`, `B`
 - Index names must be unique per index type
+- `contributor_insights.all_global_secondary_indexes_enabled` and `contributor_insights.global_secondary_index_names` cannot be set together
 - `table_class` must be `STANDARD` or `STANDARD_INFREQUENT_ACCESS`
 - KMS ARNs (table SSE and replicas) are format-validated when provided
 

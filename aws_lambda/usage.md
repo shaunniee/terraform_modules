@@ -216,6 +216,203 @@ module "lambda" {
 }
 ```
 
+## Boolean-First Observability Example (Recommended)
+
+```hcl
+module "lambda" {
+  source = "./aws_lambda"
+
+  function_name = "orders-processor"
+  runtime       = "python3.12"
+  handler       = "app.lambda_handler"
+  filename      = "build/orders-processor.zip"
+
+  observability = {
+    enabled                         = true
+    enable_default_alarms           = true
+    enable_anomaly_detection_alarms = true
+    default_alarm_actions           = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+  }
+}
+```
+
+## Observability Scenario Reference
+
+Use this section to quickly pick a configuration pattern.
+
+| Scenario | `observability` | Other blocks | Best for |
+|---|---|---|---|
+| No observability | `enabled = false` | none | local/dev with external monitoring |
+| Presets only | `enabled = true`, `enable_default_alarms = true` | optional shared actions | fast baseline alerting |
+| Presets + custom overrides | same as above | `metric_alarms` | keep defaults and tune specific thresholds |
+| Anomaly only | `enabled = true`, `enable_default_alarms = false`, `enable_anomaly_detection_alarms = true` | optional `metric_anomaly_alarms` | spiky/seasonal traffic |
+| Custom alarms only | `enabled = false` | `metric_alarms` | full manual control |
+| DLQ focused | any | `dead_letter_target_arn`, `dlq_cloudwatch_metric_alarms`, `dlq_log_metric_filters` | async failure visibility |
+| External IAM role | any | `execution_role_arn`, optional `create_cloudwatch_log_group = false` | centralized IAM ownership |
+
+### Scenario A: Minimal (No observability)
+
+```hcl
+module "lambda" {
+  source = "./aws_lambda"
+
+  function_name = "orders-dev"
+  runtime       = "python3.12"
+  handler       = "app.lambda_handler"
+  filename      = "build/orders-dev.zip"
+
+  observability = {
+    enabled = false
+  }
+}
+```
+
+### Scenario B: Preset alarms only
+
+```hcl
+module "lambda" {
+  source = "./aws_lambda"
+
+  function_name = "orders-api"
+  runtime       = "python3.12"
+  handler       = "app.lambda_handler"
+  filename      = "build/orders-api.zip"
+
+  observability = {
+    enabled               = true
+    enable_default_alarms = true
+    default_alarm_actions = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
+  }
+}
+```
+
+### Scenario C: Presets + override one default + add one custom alarm
+
+```hcl
+module "lambda" {
+  source = "./aws_lambda"
+
+  function_name = "orders-api"
+  runtime       = "python3.12"
+  handler       = "app.lambda_handler"
+  filename      = "build/orders-api.zip"
+
+  observability = {
+    enabled               = true
+    enable_default_alarms = true
+  }
+
+  metric_alarms = {
+    errors = {
+      enabled             = true
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 1
+      metric_name         = "Errors"
+      period              = 60
+      statistic           = "Sum"
+      threshold           = 5
+      treat_missing_data  = "notBreaching"
+    }
+
+    iterator_age = {
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      evaluation_periods  = 3
+      metric_name         = "IteratorAge"
+      period              = 60
+      statistic           = "Maximum"
+      threshold           = 60000
+      treat_missing_data  = "notBreaching"
+    }
+  }
+}
+```
+
+### Scenario D: Anomaly alarms only
+
+```hcl
+module "lambda" {
+  source = "./aws_lambda"
+
+  function_name = "orders-worker"
+  runtime       = "python3.12"
+  handler       = "app.lambda_handler"
+  filename      = "build/orders-worker.zip"
+
+  observability = {
+    enabled                         = true
+    enable_default_alarms           = false
+    enable_anomaly_detection_alarms = true
+  }
+}
+```
+
+### Scenario E: Fully custom alarms only (no presets)
+
+```hcl
+module "lambda" {
+  source = "./aws_lambda"
+
+  function_name = "billing-worker"
+  runtime       = "python3.12"
+  handler       = "handler.main"
+  filename      = "build/billing-worker.zip"
+
+  observability = {
+    enabled = false
+  }
+
+  metric_alarms = {
+    duration_p99 = {
+      comparison_operator = "GreaterThanThreshold"
+      evaluation_periods  = 5
+      metric_name         = "Duration"
+      period              = 60
+      extended_statistic  = "p99"
+      threshold           = 1200
+      treat_missing_data  = "notBreaching"
+    }
+  }
+
+  metric_anomaly_alarms = {
+    invocations_anomaly_custom = {
+      comparison_operator      = "GreaterThanUpperThreshold"
+      evaluation_periods       = 2
+      metric_name              = "Invocations"
+      period                   = 300
+      statistic                = "Sum"
+      anomaly_detection_stddev = 3
+      treat_missing_data       = "notBreaching"
+    }
+  }
+}
+```
+
+### Scenario F: External IAM + explicit observability permissions
+
+```hcl
+module "lambda" {
+  source = "./aws_lambda"
+
+  function_name = "payments-handler"
+  runtime       = "python3.12"
+  handler       = "app.lambda_handler"
+  filename      = "build/payments-handler.zip"
+
+  execution_role_arn = "arn:aws:iam::123456789012:role/existing-lambda-execution-role"
+
+  enable_logging_permissions    = false
+  enable_monitoring_permissions = false
+  enable_tracing_permissions    = false
+
+  create_cloudwatch_log_group = false
+
+  observability = {
+    enabled               = true
+    enable_default_alarms = true
+  }
+}
+```
+
 ## DLQ Observability Example (Metrics, Alarms, Logs)
 
 ```hcl
@@ -268,11 +465,15 @@ Notes:
   - SQS DLQ: `QueueName=<queue name>` with default namespace `AWS/SQS`
   - SNS DLQ: `TopicName=<topic name>` with default namespace `AWS/SNS`
 - `dlq_log_metric_filters` creates CloudWatch log metric filters on `/aws/lambda/<function_name>`.
+- If `create_cloudwatch_log_group = false` and `dlq_log_metric_filters` are set, the log group `/aws/lambda/<function_name>` must already exist.
 - Lambda DLQ payloads are stored in SQS/SNS; payload-level logging still requires a DLQ consumer (Lambda/worker) that reads and logs messages.
 
 Notes:
 - The module always injects `FunctionName = <lambda function name>` into alarm dimensions.
-- `dimensions` in each alarm can override or add dimensions if needed.
+- `dimensions` in each alarm can add dimensions, but cannot override `FunctionName`.
+- `metric_alarms` supports `enabled = true|false` per alarm entry.
+- Preset alarms are created when `observability.enabled = true` and `observability.enable_default_alarms = true` (`Errors`, `Throttles`, `Duration p95`).
+- Anomaly alarms are created when `observability.enabled = true` and `observability.enable_anomaly_detection_alarms = true`, and can be customized via `metric_anomaly_alarms`.
 - `enable_logging_permissions` controls attachment of `AWSLambdaBasicExecutionRole` when the module creates the role (enabled by default).
 - `enable_monitoring_permissions` controls attachment of `CloudWatchLambdaInsightsExecutionRolePolicy` when the module creates the role.
 - `enable_tracing_permissions` controls attachment of `AWSXRayDaemonWriteAccess` when `tracing_mode = "Active"` and the module creates the role.
@@ -308,7 +509,9 @@ Notes:
 | `log_group_kms_key_arn` | string | `null` | No | KMS key ARN for log group encryption |
 | `aliases` | map(object) | `{}` | No | Lambda aliases keyed by alias name |
 | `tracing_mode` | string | `"PassThrough"` | No | Lambda X-Ray tracing mode (`PassThrough` or `Active`) |
+| `observability` | object | disabled | No | Boolean-first observability toggles and shared alarm actions |
 | `metric_alarms` | map(object) | `{}` | No | Dynamic CloudWatch metric alarms keyed by logical name |
+| `metric_anomaly_alarms` | map(object) | `{}` | No | CloudWatch anomaly detection alarms keyed by logical name |
 | `dlq_cloudwatch_metric_alarms` | map(object) | `{}` | No | DLQ-specific CloudWatch metric alarms (requires `dead_letter_target_arn`) |
 | `dlq_log_metric_filters` | map(object) | `{}` | No | DLQ-related CloudWatch log metric filters on Lambda log group |
 | `environment_variables` | map(string) | `{}` | No | Lambda environment variables |
@@ -330,6 +533,8 @@ Notes:
 | `lambda_alias_invoke_arns` | Map of alias invoke ARNs keyed by alias name |
 | `cloudwatch_metric_alarm_arns` | Map of metric alarm ARNs keyed by `metric_alarms` key |
 | `cloudwatch_metric_alarm_names` | Map of metric alarm names keyed by `metric_alarms` key |
+| `cloudwatch_metric_anomaly_alarm_arns` | Map of anomaly alarm ARNs keyed by `metric_anomaly_alarms` key |
+| `cloudwatch_metric_anomaly_alarm_names` | Map of anomaly alarm names keyed by `metric_anomaly_alarms` key |
 | `dlq_cloudwatch_metric_alarm_arns` | Map of DLQ metric alarm ARNs keyed by `dlq_cloudwatch_metric_alarms` key |
 | `dlq_cloudwatch_metric_alarm_names` | Map of DLQ metric alarm names keyed by `dlq_cloudwatch_metric_alarms` key |
 | `dlq_log_metric_filter_names` | Map of DLQ log metric filter names keyed by `dlq_log_metric_filters` key |

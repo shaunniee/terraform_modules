@@ -53,6 +53,16 @@ output "cloudwatch_metric_alarm_names" {
   value       = { for k, v in aws_cloudwatch_metric_alarm.dynamodb : k => v.alarm_name }
 }
 
+output "cloudwatch_metric_anomaly_alarm_arns" {
+  description = "Map of CloudWatch anomaly alarm ARNs keyed by cloudwatch_metric_anomaly_alarms key."
+  value       = { for k, v in aws_cloudwatch_metric_alarm.dynamodb_anomaly : k => v.arn }
+}
+
+output "cloudwatch_metric_anomaly_alarm_names" {
+  description = "Map of CloudWatch anomaly alarm names keyed by cloudwatch_metric_anomaly_alarms key."
+  value       = { for k, v in aws_cloudwatch_metric_alarm.dynamodb_anomaly : k => v.alarm_name }
+}
+
 output "contributor_insights_table_enabled" {
   description = "Whether Contributor Insights is enabled for the table."
   value       = length(aws_dynamodb_contributor_insights.table) > 0
@@ -71,4 +81,14 @@ output "cloudtrail_data_events_trail_arn" {
 output "cloudtrail_data_events_trail_name" {
   description = "CloudTrail name when cloudtrail_data_events is enabled, else null."
   value       = try(aws_cloudtrail.dynamodb_data_events[0].name, null)
+}
+
+output "cloudtrail_data_events_cloudwatch_log_group_name" {
+  description = "CloudWatch Log Group name used by CloudTrail data events when CloudWatch Logs delivery is enabled."
+  value       = try(local.cloudtrail_logs_enabled, false) ? try(aws_cloudwatch_log_group.cloudtrail_data_events[0].name, local.cloudtrail_log_group_name) : null
+}
+
+output "cloudtrail_data_events_cloudwatch_logs_role_arn" {
+  description = "IAM role ARN used by CloudTrail to publish into CloudWatch Logs when enabled."
+  value       = try(aws_iam_role.cloudtrail_to_cwlogs[0].arn, try(local.effective_cloudtrail_data_events.cloud_watch_logs_role_arn, null))
 }

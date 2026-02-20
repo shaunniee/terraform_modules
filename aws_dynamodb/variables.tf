@@ -267,6 +267,54 @@ variable "tags" {
   default     = {}
 }
 
+variable "observability" {
+  description = "High-level observability toggles to avoid manual per-feature configuration."
+  type = object({
+    enabled                                             = optional(bool, false)
+    enable_default_alarms                               = optional(bool, true)
+    enable_anomaly_detection_alarms                     = optional(bool, false)
+    enable_contributor_insights_table                   = optional(bool, true)
+    enable_contributor_insights_all_global_secondary_indexes = optional(bool, true)
+    enable_cloudtrail_data_events                       = optional(bool, false)
+    cloudtrail_s3_bucket_name                           = optional(string)
+    default_alarm_actions                               = optional(list(string), [])
+    default_ok_actions                                  = optional(list(string), [])
+    default_insufficient_data_actions                   = optional(list(string), [])
+  })
+  default = {
+    enabled                                             = false
+    enable_default_alarms                               = true
+    enable_anomaly_detection_alarms                     = false
+    enable_contributor_insights_table                   = true
+    enable_contributor_insights_all_global_secondary_indexes = true
+    enable_cloudtrail_data_events                       = false
+    cloudtrail_s3_bucket_name                           = null
+    default_alarm_actions                               = []
+    default_ok_actions                                  = []
+    default_insufficient_data_actions                   = []
+  }
+
+  validation {
+    condition = (
+      !try(var.observability.enabled, false) ||
+      !try(var.observability.enable_cloudtrail_data_events, false) ||
+      (
+        coalesce(
+          try(var.observability.cloudtrail_s3_bucket_name, null),
+          try(var.cloudtrail_data_events.s3_bucket_name, null)
+        ) != null &&
+        trimspace(
+          coalesce(
+            try(var.observability.cloudtrail_s3_bucket_name, null),
+            try(var.cloudtrail_data_events.s3_bucket_name, "")
+          )
+        ) != ""
+      )
+    )
+    error_message = "When observability.enabled and observability.enable_cloudtrail_data_events are true, set observability.cloudtrail_s3_bucket_name (or cloudtrail_data_events.s3_bucket_name)."
+  }
+}
+
 variable "cloudwatch_metric_alarms" {
   description = "Map of CloudWatch metric alarms keyed by logical alarm key. Defaults namespace to AWS/DynamoDB and injects TableName dimension."
   type = map(object({
@@ -308,6 +356,58 @@ variable "cloudwatch_metric_alarms" {
   }
 }
 
+variable "cloudwatch_metric_anomaly_alarms" {
+  description = "Map of CloudWatch anomaly detection alarms keyed by logical alarm key. Each alarm uses ANOMALY_DETECTION_BAND on a DynamoDB metric with TableName dimension injected by default."
+  type = map(object({
+    enabled                     = optional(bool, true)
+    alarm_name                  = optional(string)
+    alarm_description           = optional(string)
+    comparison_operator         = optional(string, "GreaterThanUpperThreshold")
+    evaluation_periods          = number
+    metric_name                 = string
+    namespace                   = optional(string, "AWS/DynamoDB")
+    period                      = number
+    statistic                   = string
+    anomaly_detection_stddev    = optional(number, 2)
+    datapoints_to_alarm         = optional(number)
+    treat_missing_data          = optional(string)
+    alarm_actions               = optional(list(string), [])
+    ok_actions                  = optional(list(string), [])
+    insufficient_data_actions   = optional(list(string), [])
+    dimensions                  = optional(map(string), {})
+    tags                        = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_anomaly_alarms) :
+      contains([
+        "GreaterThanUpperThreshold",
+        "LessThanLowerThreshold",
+        "LessThanLowerOrGreaterThanUpperThreshold"
+      ], try(alarm.comparison_operator, "GreaterThanUpperThreshold"))
+    ])
+    error_message = "cloudwatch_metric_anomaly_alarms[*].comparison_operator must be GreaterThanUpperThreshold, LessThanLowerThreshold, or LessThanLowerOrGreaterThanUpperThreshold."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_anomaly_alarms) :
+      try(alarm.treat_missing_data, null) == null || contains(["breaching", "notBreaching", "ignore", "missing"], alarm.treat_missing_data)
+    ])
+    error_message = "cloudwatch_metric_anomaly_alarms[*].treat_missing_data must be one of breaching, notBreaching, ignore, missing."
+  }
+
+  validation {
+    condition = alltrue([
+      for alarm in values(var.cloudwatch_metric_anomaly_alarms) :
+      try(alarm.anomaly_detection_stddev, 2) > 0
+    ])
+    error_message = "cloudwatch_metric_anomaly_alarms[*].anomaly_detection_stddev must be greater than 0."
+  }
+}
+
 variable "contributor_insights" {
   description = "Contributor Insights configuration for DynamoDB table and optional GSIs (useful for hot-key tracing/analysis)."
   type = object({
@@ -332,6 +432,14 @@ variable "contributor_insights" {
     ])
     error_message = "contributor_insights.global_secondary_index_names must reference existing global_secondary_indexes names."
   }
+
+  validation {
+    condition = !(
+      try(var.contributor_insights.all_global_secondary_indexes_enabled, false) &&
+      length(try(var.contributor_insights.global_secondary_index_names, [])) > 0
+    )
+    error_message = "Set either contributor_insights.all_global_secondary_indexes_enabled=true or contributor_insights.global_secondary_index_names, but not both."
+  }
 }
 
 variable "cloudtrail_data_events" {
@@ -340,16 +448,30 @@ variable "cloudtrail_data_events" {
     enabled                    = optional(bool, false)
     trail_name                 = optional(string)
     s3_bucket_name             = optional(string)
+    kms_key_id                 = optional(string)
+    enable_log_file_validation = optional(bool, true)
     include_management_events  = optional(bool, false)
     read_write_type            = optional(string, "All")
+    cloud_watch_logs_enabled   = optional(bool, false)
+    create_cloud_watch_logs_role = optional(bool, false)
+    cloud_watch_logs_group_name = optional(string)
+    cloud_watch_logs_retention_in_days = optional(number, 90)
+    cloud_watch_logs_role_arn  = optional(string)
     tags                       = optional(map(string), {})
   })
   default = {
     enabled                   = false
     trail_name                = null
     s3_bucket_name            = null
+    kms_key_id                = null
+    enable_log_file_validation = true
     include_management_events = false
     read_write_type           = "All"
+    cloud_watch_logs_enabled  = false
+    create_cloud_watch_logs_role = false
+    cloud_watch_logs_group_name = null
+    cloud_watch_logs_retention_in_days = 90
+    cloud_watch_logs_role_arn = null
     tags                      = {}
   }
 
@@ -361,5 +483,33 @@ variable "cloudtrail_data_events" {
   validation {
     condition     = contains(["All", "ReadOnly", "WriteOnly"], try(var.cloudtrail_data_events.read_write_type, "All"))
     error_message = "cloudtrail_data_events.read_write_type must be one of All, ReadOnly, WriteOnly."
+  }
+
+  validation {
+    condition     = try(var.cloudtrail_data_events.cloud_watch_logs_retention_in_days, 90) >= 1
+    error_message = "cloudtrail_data_events.cloud_watch_logs_retention_in_days must be >= 1."
+  }
+
+  validation {
+    condition = (
+      !try(var.cloudtrail_data_events.cloud_watch_logs_enabled, false) ||
+      (
+        try(var.cloudtrail_data_events.cloud_watch_logs_role_arn, null) == null ||
+        can(regex("^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/.+$", var.cloudtrail_data_events.cloud_watch_logs_role_arn))
+      )
+    )
+    error_message = "cloudtrail_data_events.cloud_watch_logs_role_arn must be a valid IAM role ARN when provided."
+  }
+
+  validation {
+    condition = (
+      !try(var.cloudtrail_data_events.cloud_watch_logs_enabled, false) ||
+      (
+        try(var.cloudtrail_data_events.create_cloud_watch_logs_role, false)
+        ? try(var.cloudtrail_data_events.cloud_watch_logs_role_arn, null) == null
+        : (try(var.cloudtrail_data_events.cloud_watch_logs_role_arn, null) != null && trimspace(var.cloudtrail_data_events.cloud_watch_logs_role_arn) != "")
+      )
+    )
+    error_message = "When cloudtrail_data_events.cloud_watch_logs_enabled=true, set exactly one mode: create_cloud_watch_logs_role=true (module-managed role) OR provide cloud_watch_logs_role_arn (external role)."
   }
 }
