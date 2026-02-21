@@ -37,6 +37,21 @@ locals {
     { for k, v in aws_cloudwatch_event_bus.this : k => v.name }
   )
 
+  # Key-only indexes — safe for for_each even when attributes contain apply-time values
+  rules_index = { for key in flatten([
+    for bus in var.event_buses : [
+      for rule in try(bus.rules, []) : "${bus.name}:${rule.name}"
+    ]
+  ]) : key => key }
+
+  targets_index = { for key in flatten([
+    for bus in var.event_buses : [
+      for rule in try(bus.rules, []) : [
+        for target in coalesce(rule.targets, []) : "${bus.name}:${rule.name}:${target.id}"
+      ]
+    ]
+  ]) : key => key }
+
   # Flatten rules from all buses
   rules = {
     for r in flatten([
@@ -89,14 +104,14 @@ locals {
 
   # Lambda targets: tighter regex matching :lambda: followed by :function:
   lambda_permission_targets = {
-    for key, target in local.targets : key => target
-    if target.create_lambda_permission && can(regex(":lambda:[a-z0-9-]+:[0-9]+:function:", target.arn))
+    for key in keys(local.targets_index) : key => local.targets[key]
+    if local.targets[key].create_lambda_permission && can(regex(":lambda:[a-z0-9-]+:[0-9]+:function:", local.targets[key].arn))
   }
 
   # Lambda targets with DLQ configured
   lambda_targets_with_dlq = {
-    for key, target in local.targets : key => target
-    if can(regex(":lambda:[a-z0-9-]+:[0-9]+:function:", target.arn)) && try(target.dead_letter_arn, null) != null
+    for key in keys(local.targets_index) : key => local.targets[key]
+    if can(regex(":lambda:[a-z0-9-]+:[0-9]+:function:", local.targets[key].arn)) && try(local.targets[key].dead_letter_arn, null) != null
   }
 
   # =========================================================================
@@ -107,11 +122,11 @@ locals {
 
   # Default per-rule alarms (FailedInvocations) — auto-created when observability is enabled
   default_per_rule_alarms = { for k, v in {
-    for rule_key, rule in local.rules :
+    for rule_key in keys(local.rules_index) :
     "failed_invocations_${rule_key}" => {
       enabled             = true
       alarm_name          = null
-      alarm_description   = "FailedInvocations alarm for rule ${rule.name} on bus ${rule.bus_name}"
+      alarm_description   = "FailedInvocations alarm for rule ${element(split(":", rule_key), 1)} on bus ${element(split(":", rule_key), 0)}"
       comparison_operator = "GreaterThanOrEqualToThreshold"
       evaluation_periods  = 2
       datapoints_to_alarm = null
@@ -259,9 +274,9 @@ locals {
   cloudwatch_metric_alarm_default_dimensions = {
     for alarm_key, alarm in local.enabled_cloudwatch_metric_alarms :
     alarm_key => merge(
-      try(alarm.rule_key, null) != null && contains(keys(local.rules), alarm.rule_key) ? {
-        EventBusName = local.rules[alarm.rule_key].bus_name
-        RuleName     = local.rules[alarm.rule_key].name
+      try(alarm.rule_key, null) != null && contains(keys(local.rules_index), alarm.rule_key) ? {
+        EventBusName = element(split(":", alarm.rule_key), 0)
+        RuleName     = element(split(":", alarm.rule_key), 1)
       } : {},
       try(alarm.event_bus_name, null) != null ? {
         EventBusName = alarm.event_bus_name
@@ -305,9 +320,9 @@ locals {
   anomaly_alarm_default_dimensions = {
     for alarm_key, alarm in local.enabled_anomaly_alarms :
     alarm_key => merge(
-      try(alarm.rule_key, null) != null && contains(keys(local.rules), alarm.rule_key) ? {
-        EventBusName = local.rules[alarm.rule_key].bus_name
-        RuleName     = local.rules[alarm.rule_key].name
+      try(alarm.rule_key, null) != null && contains(keys(local.rules_index), alarm.rule_key) ? {
+        EventBusName = element(split(":", alarm.rule_key), 0)
+        RuleName     = element(split(":", alarm.rule_key), 1)
       } : {},
       try(alarm.event_bus_name, null) != null ? {
         EventBusName = alarm.event_bus_name
@@ -331,16 +346,16 @@ locals {
 # =============================================================================
 
 resource "aws_cloudwatch_event_rule" "this" {
-  for_each = local.rules
+  for_each = local.rules_index
 
-  name                = each.value.name
-  description         = each.value.desc
-  state               = each.value.state
-  event_pattern       = each.value.pattern
-  schedule_expression = each.value.schedule
-  event_bus_name      = local.bus_name_map[each.value.bus_name]
+  name                = local.rules[each.key].name
+  description         = local.rules[each.key].desc
+  state               = local.rules[each.key].state
+  event_pattern       = local.rules[each.key].pattern
+  schedule_expression = local.rules[each.key].schedule
+  event_bus_name      = local.bus_name_map[local.rules[each.key].bus_name]
 
-  tags = merge(var.tags, each.value.tags)
+  tags = merge(var.tags, local.rules[each.key].tags)
 }
 
 # =============================================================================
@@ -348,25 +363,25 @@ resource "aws_cloudwatch_event_rule" "this" {
 # =============================================================================
 
 resource "aws_cloudwatch_event_target" "this" {
-  for_each = local.targets
+  for_each = local.targets_index
 
-  rule           = aws_cloudwatch_event_rule.this[each.value.rule_key].name
-  target_id      = each.value.id
-  arn            = each.value.arn
-  input          = each.value.input
-  input_path     = each.value.input_path
-  role_arn       = each.value.role_arn
-  event_bus_name = local.bus_name_map[each.value.bus_name]
+  rule           = aws_cloudwatch_event_rule.this[local.targets[each.key].rule_key].name
+  target_id      = local.targets[each.key].id
+  arn            = local.targets[each.key].arn
+  input          = local.targets[each.key].input
+  input_path     = local.targets[each.key].input_path
+  role_arn       = local.targets[each.key].role_arn
+  event_bus_name = local.bus_name_map[local.targets[each.key].bus_name]
 
   dynamic "dead_letter_config" {
-    for_each = each.value.dead_letter_arn == null ? [] : [each.value.dead_letter_arn]
+    for_each = local.targets[each.key].dead_letter_arn == null ? [] : [local.targets[each.key].dead_letter_arn]
     content {
       arn = dead_letter_config.value
     }
   }
 
   dynamic "retry_policy" {
-    for_each = each.value.retry_policy == null ? [] : [each.value.retry_policy]
+    for_each = local.targets[each.key].retry_policy == null ? [] : [local.targets[each.key].retry_policy]
     content {
       maximum_event_age_in_seconds = try(retry_policy.value.maximum_event_age_in_seconds, null)
       maximum_retry_attempts       = try(retry_policy.value.maximum_retry_attempts, null)
@@ -374,7 +389,7 @@ resource "aws_cloudwatch_event_target" "this" {
   }
 
   dynamic "input_transformer" {
-    for_each = each.value.input_transformer == null ? [] : [each.value.input_transformer]
+    for_each = local.targets[each.key].input_transformer == null ? [] : [local.targets[each.key].input_transformer]
     content {
       input_paths    = try(input_transformer.value.input_paths_map, null)
       input_template = input_transformer.value.input_template
@@ -384,7 +399,7 @@ resource "aws_cloudwatch_event_target" "this" {
   # --- Specialized target blocks ---
 
   dynamic "ecs_target" {
-    for_each = each.value.ecs_target == null ? [] : [each.value.ecs_target]
+    for_each = local.targets[each.key].ecs_target == null ? [] : [local.targets[each.key].ecs_target]
     content {
       task_definition_arn     = ecs_target.value.task_definition_arn
       task_count              = try(ecs_target.value.task_count, 1)
@@ -425,21 +440,21 @@ resource "aws_cloudwatch_event_target" "this" {
   }
 
   dynamic "kinesis_target" {
-    for_each = each.value.kinesis_target == null ? [] : [each.value.kinesis_target]
+    for_each = local.targets[each.key].kinesis_target == null ? [] : [local.targets[each.key].kinesis_target]
     content {
       partition_key_path = try(kinesis_target.value.partition_key_path, null)
     }
   }
 
   dynamic "sqs_target" {
-    for_each = each.value.sqs_target == null ? [] : [each.value.sqs_target]
+    for_each = local.targets[each.key].sqs_target == null ? [] : [local.targets[each.key].sqs_target]
     content {
       message_group_id = try(sqs_target.value.message_group_id, null)
     }
   }
 
   dynamic "http_target" {
-    for_each = each.value.http_target == null ? [] : [each.value.http_target]
+    for_each = local.targets[each.key].http_target == null ? [] : [local.targets[each.key].http_target]
     content {
       header_parameters       = try(http_target.value.header_parameters, {})
       query_string_parameters = try(http_target.value.query_string_parameters, {})
@@ -448,7 +463,7 @@ resource "aws_cloudwatch_event_target" "this" {
   }
 
   dynamic "batch_target" {
-    for_each = each.value.batch_target == null ? [] : [each.value.batch_target]
+    for_each = local.targets[each.key].batch_target == null ? [] : [local.targets[each.key].batch_target]
     content {
       job_definition = batch_target.value.job_definition
       job_name       = batch_target.value.job_name
@@ -541,7 +556,7 @@ resource "aws_cloudwatch_metric_alarm" "this" {
 
   lifecycle {
     precondition {
-      condition     = try(each.value.rule_key, null) == null || contains(keys(local.rules), each.value.rule_key)
+      condition     = try(each.value.rule_key, null) == null || contains(keys(local.rules_index), each.value.rule_key)
       error_message = "cloudwatch_metric_alarms[\"${each.key}\"].rule_key must reference an existing module rule in '<bus_name>:<rule_name>' format."
     }
   }
@@ -635,7 +650,7 @@ resource "aws_cloudwatch_metric_alarm" "anomaly" {
 
   lifecycle {
     precondition {
-      condition     = try(each.value.rule_key, null) == null || contains(keys(local.rules), each.value.rule_key)
+      condition     = try(each.value.rule_key, null) == null || contains(keys(local.rules_index), each.value.rule_key)
       error_message = "cloudwatch_metric_anomaly_alarms[\"${each.key}\"].rule_key must reference an existing module rule in '<bus_name>:<rule_name>' format."
     }
   }
