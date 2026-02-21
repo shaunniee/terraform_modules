@@ -83,9 +83,3 @@ resource "aws_ssm_parameter" "this" {
 
   }
 }
-
-resource "aws_ssm_parameter_policy" "this" {
-  for_each = { for p in local.all_parameters : p.name => p if try(p.policies, null) != null }
-  name     = aws_ssm_parameter.this[each.key].name
-  policy   = each.value.policies
-}

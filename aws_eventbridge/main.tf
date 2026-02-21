@@ -85,7 +85,7 @@ locals {
             input_path                     = try(target.input_path, null)
             input_transformer              = try(target.input_transformer, null)
             role_arn                       = try(target.role_arn, null)
-            dead_letter_arn                = try(target.dead_letter_arn, null)
+            dead_letter_arn                = try(var.target_dlq_arns["${bus.name}:${rule.name}:${target.id}"], try(target.dead_letter_arn, null))
             retry_policy                   = try(target.retry_policy, null)
             create_lambda_permission       = try(target.create_lambda_permission, true)
             lambda_permission_statement_id = try(target.lambda_permission_statement_id, null)
