@@ -802,6 +802,139 @@ aws deploy get-deployment --deployment-id <deployment-id>
 
 ---
 
+## Complete observability and logging guide (production)
+
+Use this section as the standard baseline for CI/CD observability across build, pipeline, and deploy.
+
+### What the module provides
+
+- **CodeBuild**: default alarms + optional dashboard + CloudWatch/S3 build logs.
+- **CodePipeline**: failed execution alarms + optional dashboard + EventBridge notifications to SNS.
+- **CodeDeploy**: deployment failure alarms + optional dashboard + deployment lifecycle visibility.
+- **Aggregated outputs**: alarm ARN maps and dashboard ARNs exposed by the parent module.
+
+### Enablement matrix
+
+- **CodeBuild**
+  - `codebuild_projects.<key>.observability.enabled = true`
+  - `enable_default_alarms`, `enable_dashboard`
+  - thresholds: `failed_builds_threshold`, `build_duration_threshold`
+- **CodePipeline**
+  - `codepipeline.observability.enabled = true`
+  - `enable_default_alarms`, `enable_dashboard`
+  - optional eventing: `enable_event_notifications = true` + `notification_sns_topic_arn`
+- **CodeDeploy**
+  - `codedeploy.observability.enabled = true`
+  - `enable_default_alarms`, `enable_dashboard`
+
+### Production preset (copy/paste)
+
+```hcl
+module "ci_cd" {
+  source = "../aws_ci_cd"
+  name   = "payments"
+
+  codebuild_projects = {
+    build = {
+      source_config = { type = "CODEPIPELINE" }
+      artifacts     = { type = "CODEPIPELINE" }
+
+      logs_config = {
+        cloudwatch = {
+          status = "ENABLED"
+        }
+        s3 = {
+          location = "my-observability-logs-bucket/codebuild/"
+          status   = "ENABLED"
+        }
+      }
+
+      observability = {
+        enabled                            = true
+        enable_default_alarms              = true
+        enable_dashboard                   = true
+        failed_builds_threshold            = 1
+        build_duration_threshold           = 1800
+        default_alarm_actions              = ["arn:aws:sns:us-east-1:123456789012:cicd-alerts"]
+        default_ok_actions                 = ["arn:aws:sns:us-east-1:123456789012:cicd-alerts"]
+        default_insufficient_data_actions  = []
+      }
+    }
+  }
+
+  codepipeline = {
+    stages = [
+      { name = "Source", actions = [{ name = "Source", category = "Source", owner = "AWS", provider = "S3", configuration = { S3Bucket = "pipeline-source", S3ObjectKey = "source.zip" }, output_artifacts = ["src"] }] },
+      { name = "Build", actions = [{ name = "Build", category = "Build", owner = "AWS", provider = "CodeBuild", configuration = { ProjectName = "payments-build" }, input_artifacts = ["src"], output_artifacts = ["build"] }] }
+    ]
+
+    observability = {
+      enabled                           = true
+      enable_default_alarms             = true
+      enable_dashboard                  = true
+      enable_event_notifications        = true
+      notification_sns_topic_arn        = "arn:aws:sns:us-east-1:123456789012:cicd-events"
+      default_alarm_actions             = ["arn:aws:sns:us-east-1:123456789012:cicd-alerts"]
+      default_ok_actions                = ["arn:aws:sns:us-east-1:123456789012:cicd-alerts"]
+      default_insufficient_data_actions = []
+    }
+  }
+
+  codedeploy = {
+    deployment_groups = {
+      production = {
+        deployment_config_name = "CodeDeployDefault.OneAtATime"
+      }
+    }
+
+    observability = {
+      enabled                           = true
+      enable_default_alarms             = true
+      enable_dashboard                  = true
+      default_alarm_actions             = ["arn:aws:sns:us-east-1:123456789012:cicd-alerts"]
+      default_ok_actions                = ["arn:aws:sns:us-east-1:123456789012:cicd-alerts"]
+      default_insufficient_data_actions = []
+    }
+  }
+}
+```
+
+### Outputs to wire into monitoring
+
+- `codebuild_alarm_arns`
+- `codepipeline_alarm_arns`
+- `codedeploy_alarm_arns`
+- `codebuild_role_arns`, `codebuild_role_names`
+- `codepipeline_role_arn`, `codepipeline_role_name`
+- `codedeploy_role_arn`, `codedeploy_role_name`
+
+### Recommended alerting policy
+
+- Route all default alarms to a shared SNS topic (`cicd-alerts`) consumed by on-call tooling.
+- Use separate SNS topic for event notifications (`cicd-events`) to avoid noise in pager channels.
+- Keep `evaluation_periods` low for failures, higher for duration/latency metrics to reduce flapping.
+
+### Required IAM permissions for full logging/observability
+
+- **CodeBuild role**
+  - CloudWatch logs: `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`
+  - Optional S3 logs: `s3:PutObject`, `s3:GetBucketAcl` on log bucket/prefix
+- **CodePipeline role**
+  - SNS publish for manual approvals/notifications: `sns:Publish`
+  - Lambda invoke (if invalidate action): `lambda:InvokeFunction`
+- **CodeDeploy service role**
+  - Managed by compute platform policy; ensure target resources and alarms are accessible
+
+### Troubleshooting flow
+
+1. Check `aws codepipeline get-pipeline-state --name <pipeline-name>` for failing stage/action.
+2. For build failures, fetch build details (`batch-get-builds`) and inspect CloudWatch log stream.
+3. For deploy failures, inspect `aws deploy get-deployment --deployment-id <id>` and deployment events.
+4. For frontend invalidation failures, inspect the invalidation Lambda log group.
+5. Confirm alarms/dashboards via module outputs and CloudWatch console.
+
+---
+
 ## Important inputs
 
 - `name`: base name prefix for all resources.
