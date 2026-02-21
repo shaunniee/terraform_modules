@@ -468,7 +468,7 @@ resource "aws_cloudwatch_metric_alarm" "cloudfront" {
   })
 }
 
-resource "aws_cloudwatch_monitoring_subscription" "this" {
+resource "aws_cloudfront_monitoring_subscription" "this" {
   count = var.realtime_metrics_subscription_enabled ? 1 : 0
 
   distribution_id = aws_cloudfront_distribution.this.id
