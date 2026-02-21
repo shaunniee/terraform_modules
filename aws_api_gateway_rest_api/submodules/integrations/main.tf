@@ -5,7 +5,7 @@ resource "aws_api_gateway_integration" "this" {
   resource_id             = var.methods_index[each.value.method_key].resource_id
   http_method             = var.methods_index[each.value.method_key].http_method
   type                    = each.value.type
-  integration_http_method = try(each.value.integration_http_method, null)
+  integration_http_method = upper(each.value.type) == "MOCK" ? null : try(each.value.integration_http_method, null)
   uri                     = try(each.value.uri, null)
   connection_type         = try(each.value.connection_type, null)
   connection_id           = try(each.value.connection_id, null)

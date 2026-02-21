@@ -265,7 +265,7 @@ resource "aws_cloudfront_distribution" "this" {
       )
 
       dynamic "s3_origin_config" {
-        for_each = lower(try(origin.value.origin_type, "s3")) == "s3" ? [1] : []
+        for_each = lower(try(origin.value.origin_type, "s3")) == "s3" && !try(origin.value.is_private_origin, false) ? [1] : []
         content {
           origin_access_identity = ""
         }
