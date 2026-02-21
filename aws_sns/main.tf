@@ -17,7 +17,7 @@ locals {
   zero_publishes_alarm_enabled = local.observability_enabled && try(var.observability.enable_zero_publishes_alarm, false)
 
   # Default alarms
-  default_alarms = local.default_alarms_enabled ? merge(
+  default_alarms = { for k, v in merge(
     {
       failed_notifications = {
         metric_name         = "NumberOfNotificationsFailed"
@@ -52,10 +52,10 @@ locals {
         tags                      = {}
       }
     } : {}
-  ) : {}
+  ) : k => v if local.default_alarms_enabled }
 
   # Opt-in zero-publishes alarm (detects dead producers)
-  zero_publishes_alarm = local.zero_publishes_alarm_enabled ? {
+  zero_publishes_alarm = { for k, v in {
     zero_publishes = {
       metric_name         = "NumberOfMessagesPublished"
       comparison_operator = "LessThanOrEqualToThreshold"
@@ -71,7 +71,7 @@ locals {
       insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
       tags                      = {}
     }
-  } : {}
+  } : k => v if local.zero_publishes_alarm_enabled }
 
   # Merge: defaults + zero-publishes + user custom alarms (user wins on key collision)
   effective_alarms = merge(local.default_alarms, local.zero_publishes_alarm, var.cloudwatch_metric_alarms)

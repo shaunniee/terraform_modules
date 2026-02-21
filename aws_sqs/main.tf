@@ -25,7 +25,7 @@ locals {
   empty_receives_alarm_enabled = local.observability_enabled && try(var.observability.enable_empty_receives_alarm, false)
   anomaly_alarms_enabled       = local.observability_enabled && try(var.observability.enable_anomaly_detection_alarms, false)
 
-  default_alarms = local.default_alarms_enabled ? {
+  default_alarms = { for k, v in {
     queue_depth = {
       queue               = "main"
       metric_name         = "ApproximateNumberOfMessagesVisible"
@@ -58,9 +58,9 @@ locals {
       insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
       tags                      = {}
     }
-  } : {}
+  } : k => v if local.default_alarms_enabled }
 
-  zero_sends_alarm = local.zero_sends_alarm_enabled ? {
+  zero_sends_alarm = { for k, v in {
     zero_sends = {
       queue               = "main"
       metric_name         = "NumberOfMessagesSent"
@@ -77,9 +77,9 @@ locals {
       insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
       tags                      = {}
     }
-  } : {}
+  } : k => v if local.zero_sends_alarm_enabled }
 
-  empty_receives_alarm = local.empty_receives_alarm_enabled ? {
+  empty_receives_alarm = { for k, v in {
     empty_receives = {
       queue               = "main"
       metric_name         = "NumberOfEmptyReceives"
@@ -96,9 +96,9 @@ locals {
       insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
       tags                      = {}
     }
-  } : {}
+  } : k => v if local.empty_receives_alarm_enabled }
 
-  dlq_default_alarm = local.dlq_alarm_enabled ? {
+  dlq_default_alarm = { for k, v in {
     dlq_depth = {
       queue               = "dlq"
       metric_name         = "ApproximateNumberOfMessagesVisible"
@@ -115,7 +115,7 @@ locals {
       insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
       tags                      = {}
     }
-  } : {}
+  } : k => v if local.dlq_alarm_enabled }
 
   # Merge default alarms + user custom alarms (user overrides defaults on key collision)
   effective_alarms = merge(local.default_alarms, local.zero_sends_alarm, local.empty_receives_alarm, local.dlq_default_alarm, var.cloudwatch_metric_alarms)
@@ -156,7 +156,7 @@ locals {
     }
   }
 
-  effective_anomaly_alarms = local.anomaly_alarms_enabled ? merge(local.default_anomaly_alarms, var.cloudwatch_metric_anomaly_alarms) : {}
+  effective_anomaly_alarms = { for k, v in merge(local.default_anomaly_alarms, var.cloudwatch_metric_anomaly_alarms) : k => v if local.anomaly_alarms_enabled }
   enabled_anomaly_alarms  = { for k, v in local.effective_anomaly_alarms : k => v if try(v.enabled, true) }
 }
 

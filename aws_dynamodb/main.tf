@@ -10,7 +10,7 @@ locals {
 
   observability_enabled = try(var.observability.enabled, false)
 
-  default_cloudwatch_metric_alarms = local.observability_enabled && try(var.observability.enable_default_alarms, true) ? {
+  default_cloudwatch_metric_alarms = { for k, v in {
     throttled_requests = {
       enabled             = true
       comparison_operator = "GreaterThanOrEqualToThreshold"
@@ -91,7 +91,7 @@ locals {
       dimensions          = {}
       tags                = {}
     }
-  } : {}
+  } : k => v if local.observability_enabled && try(var.observability.enable_default_alarms, true) }
 
   default_gsi_throttle_alarms = local.observability_enabled && try(var.observability.enable_default_alarms, true) && length(var.global_secondary_indexes) > 0 ? merge([
     for g in var.global_secondary_indexes : {
@@ -130,7 +130,7 @@ locals {
     }
   ]...) : {}
 
-  default_provisioned_capacity_alarms = local.observability_enabled && try(var.observability.enable_default_alarms, true) && var.billing_mode == "PROVISIONED" ? {
+  default_provisioned_capacity_alarms = { for k, v in {
     read_capacity_utilization = {
       enabled             = true
       comparison_operator = "GreaterThanOrEqualToThreshold"
@@ -163,7 +163,7 @@ locals {
       dimensions          = {}
       tags                = {}
     }
-  } : {}
+  } : k => v if local.observability_enabled && try(var.observability.enable_default_alarms, true) && var.billing_mode == "PROVISIONED" }
 
   effective_cloudwatch_metric_alarms = merge(
     local.default_cloudwatch_metric_alarms,
@@ -178,7 +178,7 @@ locals {
     if try(alarm.enabled, true)
   }
 
-  default_cloudwatch_metric_anomaly_alarms = local.observability_enabled && try(var.observability.enable_anomaly_detection_alarms, false) ? {
+  default_cloudwatch_metric_anomaly_alarms = { for k, v in {
     consumed_read_capacity_units_anomaly = {
       enabled                  = true
       comparison_operator      = "GreaterThanUpperThreshold"
@@ -211,7 +211,7 @@ locals {
       dimensions               = {}
       tags                     = {}
     }
-  } : {}
+  } : k => v if local.observability_enabled && try(var.observability.enable_anomaly_detection_alarms, false) }
 
   effective_cloudwatch_metric_anomaly_alarms = merge(local.default_cloudwatch_metric_anomaly_alarms, var.cloudwatch_metric_anomaly_alarms)
 

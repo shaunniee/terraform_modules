@@ -22,7 +22,7 @@ locals {
   observability_enabled = try(var.observability.enabled, false)
   dashboard_enabled     = local.observability_enabled && try(var.observability.enable_dashboard, false)
 
-  default_metric_alarms = local.observability_enabled && try(var.observability.enable_default_alarms, true) ? {
+  default_metric_alarms = { for k, v in {
     errors = {
       enabled             = true
       comparison_operator = "GreaterThanOrEqualToThreshold"
@@ -71,7 +71,7 @@ locals {
       dimensions          = {}
       tags                = {}
     }
-    concurrent_executions = var.reserved_concurrent_executions > 0 ? {
+    concurrent_executions = {
       enabled             = true
       comparison_operator = "GreaterThanOrEqualToThreshold"
       evaluation_periods  = 1
@@ -79,17 +79,19 @@ locals {
       namespace           = "AWS/Lambda"
       period              = 60
       statistic           = "Maximum"
-      threshold           = floor(var.reserved_concurrent_executions * 0.8)
+      threshold           = floor(max(var.reserved_concurrent_executions, 1) * 0.8)
       treat_missing_data  = "notBreaching"
       alarm_actions       = try(var.observability.default_alarm_actions, [])
       ok_actions          = try(var.observability.default_ok_actions, [])
       insufficient_data_actions = try(var.observability.default_insufficient_data_actions, [])
       dimensions          = {}
       tags                = {}
-    } : null
-  } : {}
+    }
+  } : k => v if local.observability_enabled && try(var.observability.enable_default_alarms, true) && (
+    k != "concurrent_executions" || var.reserved_concurrent_executions > 0
+  ) }
 
-  filtered_default_metric_alarms = { for k, v in local.default_metric_alarms : k => v if v != null }
+  filtered_default_metric_alarms = local.default_metric_alarms
 
   effective_metric_alarms = merge(local.filtered_default_metric_alarms, var.metric_alarms)
 
@@ -99,7 +101,7 @@ locals {
     if try(alarm.enabled, true)
   }
 
-  default_metric_anomaly_alarms = local.observability_enabled && try(var.observability.enable_anomaly_detection_alarms, false) ? {
+  default_metric_anomaly_alarms = { for k, v in {
     invocations_anomaly = {
       enabled                  = true
       comparison_operator      = "GreaterThanUpperThreshold"
@@ -132,7 +134,7 @@ locals {
       dimensions               = {}
       tags                     = {}
     }
-  } : {}
+  } : k => v if local.observability_enabled && try(var.observability.enable_anomaly_detection_alarms, false) }
 
   effective_metric_anomaly_alarms = merge(local.default_metric_anomaly_alarms, var.metric_anomaly_alarms)
 

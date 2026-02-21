@@ -21,7 +21,7 @@ locals {
   observability_enabled = try(var.observability.enabled, false)
   dashboard_enabled     = local.observability_enabled && try(var.observability.enable_dashboard, false)
 
-  default_metric_alarms = local.observability_enabled && try(var.observability.enable_default_alarms, true) ? {
+  default_metric_alarms = { for k, v in {
     high_5xx_errors = {
       enabled             = true
       comparison_operator = "GreaterThanOrEqualToThreshold"
@@ -86,7 +86,7 @@ locals {
       dimensions          = {}
       tags                = {}
     }
-  } : {}
+  } : k => v if local.observability_enabled && try(var.observability.enable_default_alarms, true) }
 
   effective_metric_alarms = merge(local.default_metric_alarms, var.cloudwatch_metric_alarms)
 
@@ -97,7 +97,7 @@ locals {
   }
 
   # Anomaly detection alarms
-  default_metric_anomaly_alarms = local.observability_enabled && try(var.observability.enable_anomaly_detection_alarms, false) ? {
+  default_metric_anomaly_alarms = { for k, v in {
     count_anomaly = {
       enabled                  = true
       comparison_operator      = "GreaterThanUpperThreshold"
@@ -130,7 +130,7 @@ locals {
       dimensions               = {}
       tags                     = {}
     }
-  } : {}
+  } : k => v if local.observability_enabled && try(var.observability.enable_anomaly_detection_alarms, false) }
 
   effective_metric_anomaly_alarms = merge(local.default_metric_anomaly_alarms, var.cloudwatch_metric_anomaly_alarms)
 

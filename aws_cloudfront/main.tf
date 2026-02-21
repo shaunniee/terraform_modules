@@ -27,7 +27,7 @@ locals {
   default_alarms_enabled = local.observability_enabled && try(var.observability.enable_default_alarms, true)
   anomaly_alarms_enabled = local.observability_enabled && try(var.observability.enable_anomaly_detection_alarms, false)
 
-  default_alarms = local.default_alarms_enabled ? {
+  default_alarms = { for k, v in {
     high_5xx_error_rate = {
       enabled             = true
       alarm_name          = null
@@ -88,7 +88,7 @@ locals {
       dimensions                = {}
       tags                      = {}
     }
-  } : {}
+  } : k => v if local.default_alarms_enabled }
 
   # Merge: defaults + user custom alarms (user wins on key collision)
   effective_alarms = merge(
@@ -97,7 +97,7 @@ locals {
   )
 
   # Anomaly detection alarms
-  default_anomaly_alarms = local.anomaly_alarms_enabled ? {
+  default_anomaly_alarms = { for k, v in {
     requests_anomaly = {
       enabled                  = true
       comparison_operator      = "GreaterThanUpperThreshold"
@@ -130,7 +130,7 @@ locals {
       dimensions               = {}
       tags                     = {}
     }
-  } : {}
+  } : k => v if local.anomaly_alarms_enabled }
 
   effective_anomaly_alarms = merge(local.default_anomaly_alarms, var.cloudwatch_metric_anomaly_alarms)
 

@@ -106,7 +106,7 @@ locals {
   observability_enabled = try(var.observability.enabled, false)
 
   # Default per-rule alarms (FailedInvocations) — auto-created when observability is enabled
-  default_per_rule_alarms = local.observability_enabled && try(var.observability.enable_per_rule_failed_invocation_alarms, true) ? {
+  default_per_rule_alarms = { for k, v in {
     for rule_key, rule in local.rules :
     "failed_invocations_${rule_key}" => {
       enabled             = true
@@ -132,10 +132,10 @@ locals {
       dimensions          = {}
       tags                = {}
     }
-  } : {}
+  } : k => v if local.observability_enabled && try(var.observability.enable_per_rule_failed_invocation_alarms, true) }
 
   # Default bus-level alarms — auto-created when observability is enabled
-  default_bus_level_alarms = local.observability_enabled && try(var.observability.enable_default_alarms, true) ? merge([
+  default_bus_level_alarms = { for k, v in merge([
     for bus in var.event_buses : {
       "throttled_rules_${bus.name}" = {
         enabled             = true
@@ -210,10 +210,10 @@ locals {
         tags                = {}
       }
     }
-  ]...) : {}
+  ]...) : k => v if local.observability_enabled && try(var.observability.enable_default_alarms, true) }
 
   # Default per-bus DroppedEvents alarm — events that matched no rule (opt-in)
-  default_dropped_events_alarms = local.observability_enabled && try(var.observability.enable_dropped_events_alarm, true) ? merge([
+  default_dropped_events_alarms = { for k, v in merge([
     for bus in var.event_buses : {
       "dropped_events_${bus.name}" = {
         enabled             = true
@@ -240,7 +240,7 @@ locals {
         tags                = {}
       }
     }
-  ]...) : {}
+  ]...) : k => v if local.observability_enabled && try(var.observability.enable_dropped_events_alarm, true) }
 
   # Merge default + user alarms (user overrides defaults on same key)
   effective_cloudwatch_metric_alarms = merge(
