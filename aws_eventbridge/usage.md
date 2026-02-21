@@ -5,6 +5,7 @@ Reusable EventBridge module that supports:
 - Rules with `event_pattern` or `schedule_expression`
 - Multiple targets per rule with `input`, `input_path`, or `input_transformer`
 - Target dead-letter queue, retry policy, and IAM role
+- Separate `target_dlq_arns` variable for DLQ ARNs unknown at plan time
 - Automatic Lambda invoke permissions (toggleable per target)
 - Event archives with optional event pattern filtering
 - Cross-account bus policies
@@ -180,7 +181,7 @@ module "eventbridge" {
 }
 ```
 
-## 5 — Event archive with KMS encryption
+## 5 — Event archive
 
 ```hcl
 module "eventbridge" {
@@ -196,11 +197,10 @@ module "eventbridge" {
 
   archives = [
     {
-      name               = "audit-archive"
-      bus_name           = "audit-events"
-      retention_days     = 90
-      kms_key_identifier = "arn:aws:kms:us-east-1:123456789012:key/abc-1234"
-      event_pattern      = jsonencode({
+      name           = "audit-archive"
+      bus_name       = "audit-events"
+      retention_days = 90
+      event_pattern  = jsonencode({
         source = ["audit.service"]
       })
     }
@@ -252,19 +252,24 @@ module "eventbridge" {
       name = "app-events"
       rules = [
         {
-          name          = "nightly-job"
+          name                = "nightly-job"
           schedule_expression = "cron(0 2 * * ? *)"
           targets = [
             {
-              id              = "nightly-lambda"
-              arn             = "arn:aws:lambda:us-east-1:123456789012:function:nightly-job"
-              dead_letter_arn = "arn:aws:sqs:us-east-1:123456789012:nightly-job-dlq"
+              id  = "nightly-lambda"
+              arn = "arn:aws:lambda:us-east-1:123456789012:function:nightly-job"
             }
           ]
         }
       ]
     }
   ]
+
+  # DLQ ARNs passed separately to avoid unknown-at-plan-time for_each errors.
+  # Keys use the format: <bus_name>:<rule_name>:<target_id>
+  target_dlq_arns = {
+    "app-events:nightly-job:nightly-lambda" = "arn:aws:sqs:us-east-1:123456789012:nightly-job-dlq"
+  }
 
   dlq_cloudwatch_metric_alarms = {
     dlq_visible_messages = {
@@ -290,6 +295,51 @@ module "eventbridge" {
       treat_missing_data  = "notBreaching"
       alarm_actions       = ["arn:aws:sns:us-east-1:123456789012:ops-alerts"]
     }
+  }
+}
+```
+
+## 7a — DLQ ARNs from resource outputs (`target_dlq_arns`)
+
+When the DLQ ARN comes from a resource created in the same plan (e.g., an `aws_sqs_queue`),
+use `target_dlq_arns` instead of `dead_letter_arn` inside the target definition. This avoids
+Terraform's "for_each depends on resource attributes that cannot be determined until apply"
+error caused by unknown values leaking into `for_each` keys.
+
+```hcl
+module "dlq" {
+  source = "../aws_sqs"
+  # ... creates the DLQ queue
+}
+
+module "eventbridge" {
+  source = "../aws_eventbridge"
+
+  event_buses = [
+    {
+      name = "order-events"
+      rules = [
+        {
+          name = "process-order"
+          event_pattern = jsonencode({
+            source      = ["ecommerce.orders"]
+            detail-type = ["OrderPlaced"]
+          })
+          targets = [
+            {
+              id  = "order-processor"
+              arn = "arn:aws:lambda:us-east-1:123456789012:function:process-order"
+              # Do NOT set dead_letter_arn here when the value is unknown at plan time.
+            }
+          ]
+        }
+      ]
+    }
+  ]
+
+  # Pass DLQ ARNs separately — keys are <bus_name>:<rule_name>:<target_id>
+  target_dlq_arns = {
+    "order-events:process-order:order-processor" = module.dlq.queue_arn
   }
 }
 ```
@@ -591,7 +641,7 @@ module "eventbridge" {
 | `input_path` | `string` | `null` | JSONPath from event. Mutually exclusive with `input` and `input_transformer`. |
 | `input_transformer` | `object` | `null` | `{ input_paths_map, input_template }`. Mutually exclusive with `input` and `input_path`. |
 | `role_arn` | `string` | `null` | IAM role ARN EventBridge assumes (must be `arn:aws:iam::<acct>:role/...`). |
-| `dead_letter_arn` | `string` | `null` | SQS DLQ ARN for failed deliveries. |
+| `dead_letter_arn` | `string` | `null` | SQS DLQ ARN for failed deliveries. For apply-time unknown values, use `target_dlq_arns` instead. |
 | `retry_policy.maximum_event_age_in_seconds` | `number` | `null` | 60–86400. |
 | `retry_policy.maximum_retry_attempts` | `number` | `null` | 0–185. |
 | `create_lambda_permission` | `bool` | `true` | Auto-create `aws_lambda_permission` for Lambda targets. |
@@ -641,8 +691,9 @@ module "eventbridge" {
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `tags` | `map(string)` | `{}` | Tags applied to all taggable resources. |
+| `target_dlq_arns` | `map(string)` | `{}` | Map of `<bus_name>:<rule_name>:<target_id>` → SQS DLQ ARN. Use instead of inline `dead_letter_arn` when the ARN is unknown at plan time (e.g., resource output). |
 | `lambda_permission_statement_id_prefix` | `string` | `"AllowExecutionFromEventBridge"` | Prefix for generated Lambda permission statement IDs. |
-| `archives` | `list(object)` | `[]` | Event archives. Each needs `name` + (`bus_name` or `event_source_arn`). Supports `kms_key_identifier`. |
+| `archives` | `list(object)` | `[]` | Event archives. Each needs `name` + (`bus_name` or `event_source_arn`). |
 | `bus_policies` | `list(object)` | `[]` | Resource policies (one per bus). Each needs `bus_name` + `policy` (JSON). |
 | `connections` | `map(object)` | `{}` | EventBridge connections for API destinations (API_KEY, BASIC, OAUTH). |
 | `api_destinations` | `map(object)` | `{}` | API destinations for HTTP/webhook targets. Each needs `connection_key`, `invocation_endpoint`, `http_method`. |
@@ -718,7 +769,7 @@ The module enforces these validations at plan time:
 16. Alarm `treat_missing_data`: `breaching|notBreaching|ignore|missing`
 17. Alarm `rule_key` format: `<bus_name>:<rule_name>`
 18. DLQ alarm `target_key` format: `<bus_name>:<rule_name>:<target_id>`
-19. Archive names unique, valid JSON pattern, `retention_days >= 0`, KMS ARN format
+19. Archive names unique, valid JSON pattern, `retention_days >= 0`
 20. Bus policies: one per bus, valid JSON policy
 21. Observability action ARNs must start with `arn:`
 22. Anomaly alarm `rule_key` format: `<bus_name>:<rule_name>`
@@ -764,6 +815,7 @@ For DLQ logging, attach a DLQ consumer (Lambda or worker) and log payloads there
 - **Default alarms use `evaluation_periods = 2`** to reduce flapping from transient spikes — override if you need instant alerts
 - **Use the default bus** for schedule-based rules (AWS requirement) and custom buses for domain events
 - **Set `dead_letter_arn`** on every critical target to capture failed deliveries
+- **Use `target_dlq_arns`** instead of inline `dead_letter_arn` when the DLQ ARN comes from a resource in the same plan (e.g., `module.dlq.queue_arn`). This avoids Terraform's "for_each depends on resource attributes that cannot be determined until apply" error.
 - **Use `input_transformer`** instead of `input` when you need partial extraction from the event
 - **Create archives** for audit/compliance buses where you may need event replay
 - **Dashboard name** is auto-truncated to 255 chars with a hash suffix for many-bus deployments

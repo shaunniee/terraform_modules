@@ -1253,3 +1253,9 @@ variable "pipes" {
     error_message = "pipes[*].target_parameters.step_function.invocation_type must be REQUEST_RESPONSE or FIRE_AND_FORGET."
   }
 }
+
+variable "target_dlq_arns" {
+  description = "Map of target key (bus_name:rule_name:target_id) to DLQ ARN. Use this instead of dead_letter_arn inside event_buses to avoid unknown-at-plan-time for_each issues."
+  type        = map(string)
+  default     = {}
+}
