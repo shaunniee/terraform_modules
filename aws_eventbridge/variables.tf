@@ -427,7 +427,6 @@ variable "archives" {
     bus_name           = optional(string)
     event_pattern      = optional(string)
     retention_days     = optional(number, 0)
-    kms_key_identifier = optional(string)
   }))
   default = []
 
@@ -459,14 +458,6 @@ variable "archives" {
     error_message = "retention_days must be >= 0 (0 = indefinite)."
   }
 
-  validation {
-    condition = alltrue([
-      for a in var.archives : (
-        try(a.kms_key_identifier, null) == null || can(regex("^arn:aws[a-zA-Z-]*:kms:", a.kms_key_identifier))
-      )
-    ])
-    error_message = "When set, archive kms_key_identifier must be a valid KMS key ARN."
-  }
 }
 
 # =============================================================================

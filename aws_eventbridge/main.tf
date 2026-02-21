@@ -493,7 +493,6 @@ resource "aws_cloudwatch_event_archive" "this" {
   )
   event_pattern    = try(each.value.event_pattern, null)
   retention_days   = try(each.value.retention_days, 0)
-  kms_key_identifier = try(each.value.kms_key_identifier, null)
 }
 
 # =============================================================================
