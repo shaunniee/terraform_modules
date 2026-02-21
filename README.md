@@ -23,6 +23,7 @@ Reusable Terraform modules for common AWS infrastructure patterns.
 | `aws_eventbridge` | Dynamic EventBridge module for buses, rules, targets, retries, DLQ, and optional Lambda invoke permissions | `aws_eventbridge/usage.md` |
 | `aws_sqs` | SQS queue module with optional dead-letter queue and redrive policy wiring | `aws_sqs/usage.md` |
 | `aws_api_gateway_rest_api` | Dynamic REST API Gateway with submodules for resources, methods, integrations, responses, stage, logs, and optional custom domain | `aws_api_gateway_rest_api/usage.md` |
+| `aws_ci_cd` | Parent CI/CD module orchestrating CodeBuild, CodePipeline, and CodeDeploy with optional artifact bucket and KMS | `aws_ci_cd/usage.md` |
 
 ## Prerequisites
 

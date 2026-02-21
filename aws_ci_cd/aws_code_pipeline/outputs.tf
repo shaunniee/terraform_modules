@@ -1,37 +1,32 @@
 # =============================================================================
-# CodeBuild Project Outputs
+# CodePipeline Outputs
 # =============================================================================
 
-output "codebuild_project_arn" {
-  description = "The ARN of the CodeBuild project."
-  value       = aws_codebuild_project.this.arn
+output "codepipeline_arn" {
+  description = "The ARN of the CodePipeline."
+  value       = aws_codepipeline.this.arn
 }
 
-output "codebuild_project_id" {
-  description = "The ID of the CodeBuild project."
-  value       = aws_codebuild_project.this.id
+output "codepipeline_id" {
+  description = "The ID of the CodePipeline."
+  value       = aws_codepipeline.this.id
 }
 
-output "codebuild_project_name" {
-  description = "The name of the CodeBuild project."
-  value       = aws_codebuild_project.this.name
-}
-
-output "codebuild_badge_url" {
-  description = "The URL of the build badge (empty if badge_enabled is false)."
-  value       = try(aws_codebuild_project.this.badge_url, "")
+output "codepipeline_name" {
+  description = "The name of the CodePipeline."
+  value       = aws_codepipeline.this.name
 }
 
 # =============================================================================
 # IAM Outputs
 # =============================================================================
 
-output "codebuild_role_arn" {
-  description = "The ARN of the IAM role used by CodeBuild."
+output "codepipeline_role_arn" {
+  description = "The ARN of the IAM role used by CodePipeline."
   value       = local.service_role_arn
 }
 
-output "codebuild_role_name" {
+output "codepipeline_role_name" {
   description = "The name of the auto-created IAM role (null if external role was provided)."
   value       = try(aws_iam_role.this[0].name, null)
 }
@@ -53,4 +48,9 @@ output "cloudwatch_alarm_names" {
 output "cloudwatch_dashboard_arn" {
   description = "The ARN of the CloudWatch dashboard (null if not created)."
   value       = try(aws_cloudwatch_dashboard.this[0].dashboard_arn, null)
+}
+
+output "event_rule_arn" {
+  description = "The ARN of the EventBridge rule for pipeline notifications (null if not created)."
+  value       = try(aws_cloudwatch_event_rule.pipeline_notifications[0].arn, null)
 }

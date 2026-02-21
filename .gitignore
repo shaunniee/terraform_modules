@@ -9,3 +9,4 @@
 *.tfvars.tfvars
 *.tfvars.tfvars
 *.tfvars.tfvars.json
+.vscode
