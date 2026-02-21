@@ -447,34 +447,22 @@ variable "cloudwatch_metric_anomaly_alarms" {
 # Cross-cutting Validations
 # =============================================================================
 
-variable "_validate_encryption_mutual_exclusivity" {
-  description = "Internal validation: sqs_managed_sse_enabled and kms_master_key_id are mutually exclusive."
-  type        = bool
-  default     = true
-
-  validation {
+check "validate_encryption_mutual_exclusivity" {
+  assert {
     condition     = !(var.sqs_managed_sse_enabled && var.kms_master_key_id != null)
     error_message = "sqs_managed_sse_enabled and kms_master_key_id are mutually exclusive. Use one or the other."
   }
 }
 
-variable "_validate_dlq_mutual_exclusivity" {
-  description = "Internal validation: create_dlq and dlq_arn are mutually exclusive."
-  type        = bool
-  default     = true
-
-  validation {
+check "validate_dlq_mutual_exclusivity" {
+  assert {
     condition     = !(var.create_dlq && var.dlq_arn != null)
     error_message = "create_dlq and dlq_arn are mutually exclusive. Either create a managed DLQ or reference an external one."
   }
 }
 
-variable "_validate_fifo_features" {
-  description = "Internal validation: FIFO features require fifo_queue = true."
-  type        = bool
-  default     = true
-
-  validation {
+check "validate_fifo_features" {
+  assert {
     condition = var.fifo_queue ? true : (
       var.content_based_deduplication == false &&
       var.deduplication_scope == null &&
@@ -484,12 +472,8 @@ variable "_validate_fifo_features" {
   }
 }
 
-variable "_validate_dlq_alarm_requires_dlq" {
-  description = "Internal validation: DLQ alarm requires a DLQ to exist."
-  type        = bool
-  default     = true
-
-  validation {
+check "validate_dlq_alarm_requires_dlq" {
+  assert {
     condition = try(var.observability.enable_dlq_alarm, true) ? (var.create_dlq || var.dlq_arn != null || !try(var.observability.enabled, false)) : true
     error_message = "observability.enable_dlq_alarm requires either create_dlq = true or dlq_arn to be set when observability is enabled."
   }

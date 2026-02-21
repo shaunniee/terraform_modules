@@ -60,7 +60,7 @@ resource "terraform_data" "depth_check" {
 
   lifecycle {
     precondition {
-      condition     = false
+      condition     = local.all_placed_count >= length(var.resources)
       error_message = "Resource nesting exceeds maximum depth of 5 levels. Some resources could not be placed. Flatten your path hierarchy or split into separate APIs."
     }
   }
