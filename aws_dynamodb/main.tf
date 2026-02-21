@@ -239,7 +239,7 @@ locals {
     var.cloudtrail_data_events,
     {
       enabled        = try(var.cloudtrail_data_events.enabled, false) || try(var.observability.enable_cloudtrail_data_events, false)
-      s3_bucket_name = coalesce(try(var.cloudtrail_data_events.s3_bucket_name, null), try(var.observability.cloudtrail_s3_bucket_name, null))
+      s3_bucket_name = try(coalesce(try(var.cloudtrail_data_events.s3_bucket_name, null), try(var.observability.cloudtrail_s3_bucket_name, null)), null)
     }
   ) : var.cloudtrail_data_events
 
