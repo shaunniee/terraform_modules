@@ -664,10 +664,34 @@ module "lambda_ci_cd" {
 }
 ```
 
-Example `buildspec.lambda.yml` (expects `appspec.yml` and function package):
+How Lambda function + alias are selected in CodeDeploy:
+
+- `ApplicationName` + `DeploymentGroupName` in CodePipeline select the CodeDeploy deployment group.
+- Lambda function and alias come from `appspec.yml` inside the deployment artifact.
+- Keep alias stable (for example `live`) and shift traffic between published versions.
+
+`appspec.yml` example:
+
+```yaml
+version: 0.0
+Resources:
+  - OrdersLambda:
+      Type: AWS::Lambda::Function
+      Properties:
+        Name: orders-handler
+        Alias: live
+        CurrentVersion: 12
+        TargetVersion: 13
+```
+
+Example `buildspec.lambda.yml` (auto-generates `appspec.yml` with current + target versions):
 
 ```yaml
 version: 0.2
+env:
+  variables:
+    FUNCTION_NAME: "orders-handler"
+    FUNCTION_ALIAS: "live"
 phases:
   install:
     runtime-versions:
@@ -677,6 +701,20 @@ phases:
       - pip install -r requirements.txt -t package/
       - cp -R src/* package/
       - cd package && zip -r ../function.zip . && cd ..
+      - TARGET_VERSION=$(aws lambda publish-version --function-name "$FUNCTION_NAME" --query 'Version' --output text)
+      - CURRENT_VERSION=$(aws lambda get-alias --function-name "$FUNCTION_NAME" --name "$FUNCTION_ALIAS" --query 'FunctionVersion' --output text)
+      - |
+        cat > appspec.yml <<EOF
+        version: 0.0
+        Resources:
+          - OrdersLambda:
+              Type: AWS::Lambda::Function
+              Properties:
+                Name: ${FUNCTION_NAME}
+                Alias: ${FUNCTION_ALIAS}
+                CurrentVersion: ${CURRENT_VERSION}
+                TargetVersion: ${TARGET_VERSION}
+        EOF
 artifacts:
   files:
     - function.zip
