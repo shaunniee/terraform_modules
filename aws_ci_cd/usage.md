@@ -723,6 +723,85 @@ artifacts:
 
 ---
 
+## Logs for CI/CD (where to look)
+
+### 1) CodeBuild logs (primary build logs)
+
+- Default CloudWatch log group: `/aws/codebuild/<project-name>`
+- In this module, CloudWatch logging is enabled by default for CodeBuild.
+- You can override group/stream with `codebuild_projects["<key>"].logs_config.cloudwatch`.
+- Optional S3 build logs can be enabled with `codebuild_projects["<key>"].logs_config.s3`.
+
+Example:
+
+```hcl
+codebuild_projects = {
+  build = {
+    source_config = { type = "CODEPIPELINE" }
+    artifacts     = { type = "CODEPIPELINE" }
+    logs_config = {
+      cloudwatch = {
+        group_name = "/aws/codebuild/my-custom-group"
+        status     = "ENABLED"
+      }
+      s3 = {
+        location = "my-log-bucket/codebuild/"
+        status   = "ENABLED"
+      }
+    }
+  }
+}
+```
+
+### 2) CodePipeline logs/events
+
+- CodePipeline does not emit full step logs like CodeBuild; use:
+  - Pipeline execution history (stage/action status)
+  - CloudWatch metrics/alarms
+  - EventBridge notifications (supported in this module)
+- Enable event notifications:
+
+```hcl
+codepipeline = {
+  # ... stages ...
+  observability = {
+    enabled                    = true
+    enable_event_notifications = true
+    notification_sns_topic_arn = "arn:aws:sns:us-east-1:123456789012:cicd-events"
+  }
+}
+```
+
+### 3) CodeDeploy logs
+
+- Deployment lifecycle status is in CodeDeploy deployment events/timeline.
+- For EC2/on-prem deployments, detailed script logs are on instances via CodeDeploy agent logs:
+  - `/var/log/aws/codedeploy-agent/codedeploy-agent.log`
+  - `/opt/codedeploy-agent/deployment-root/...` (hook script logs)
+- For Lambda deployments, execution logs are in the Lambda function CloudWatch log group.
+
+### 4) CloudFront invalidation Lambda logs (frontend pattern)
+
+- If you use the cache invalidation Lambda action in pipeline, check that Lambda’s CloudWatch logs for invalidation request IDs and errors.
+
+### Quick CLI checks
+
+```bash
+# Show latest CodeBuild builds
+aws codebuild list-builds-for-project --project-name <project-name>
+
+# Fetch one build details (includes log group/stream)
+aws codebuild batch-get-builds --ids <build-id>
+
+# Pipeline execution status
+aws codepipeline get-pipeline-state --name <pipeline-name>
+
+# CodeDeploy deployment details
+aws deploy get-deployment --deployment-id <deployment-id>
+```
+
+---
+
 ## Important inputs
 
 - `name`: base name prefix for all resources.

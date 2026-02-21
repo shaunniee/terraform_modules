@@ -59,6 +59,11 @@ output "codebuild_role_arns" {
   value       = { for k, v in module.codebuild : k => v.codebuild_role_arn }
 }
 
+output "codebuild_role_names" {
+  description = "Map of CodeBuild project key to IAM role name (null if external role was provided)."
+  value       = { for k, v in module.codebuild : k => v.codebuild_role_name }
+}
+
 output "codebuild_badge_urls" {
   description = "Map of CodeBuild project key to badge URL."
   value       = { for k, v in module.codebuild : k => v.codebuild_badge_url }
@@ -83,6 +88,11 @@ output "codepipeline_role_arn" {
   value       = try(module.codepipeline[0].codepipeline_role_arn, null)
 }
 
+output "codepipeline_role_name" {
+  description = "The name of the CodePipeline IAM role (null if external role was provided)."
+  value       = try(module.codepipeline[0].codepipeline_role_name, null)
+}
+
 # =============================================================================
 # CodeDeploy Outputs
 # =============================================================================
@@ -105,6 +115,11 @@ output "codedeploy_deployment_group_arns" {
 output "codedeploy_role_arn" {
   description = "The ARN of the CodeDeploy IAM role."
   value       = try(module.codedeploy[0].codedeploy_role_arn, null)
+}
+
+output "codedeploy_role_name" {
+  description = "The name of the CodeDeploy IAM role (null if external role was provided)."
+  value       = try(module.codedeploy[0].codedeploy_role_name, null)
 }
 
 # =============================================================================
