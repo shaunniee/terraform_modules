@@ -7,7 +7,7 @@ data "aws_region" "current" {}
 
 locals {
   account_id = data.aws_caller_identity.current.account_id
-  region     = data.aws_region.current.region
+  region     = data.aws_region.current.name
 
   create_role     = var.service_role_arn == null
   service_role_arn = local.create_role ? aws_iam_role.this[0].arn : var.service_role_arn
