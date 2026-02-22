@@ -14,7 +14,7 @@ locals {
   managed_policy_arn = {
     Server = "arn:aws:iam::aws:policy/AWSCodeDeployRole"
     ECS    = "arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS"
-    Lambda = "arn:aws:iam::aws:policy/AWSCodeDeployRoleForLambda"
+    Lambda = "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRoleForLambda"
   }[var.compute_platform]
 
   # Observability
@@ -153,7 +153,7 @@ resource "aws_codedeploy_deployment_group" "this" {
   # Deployment Style
   deployment_style {
     deployment_type   = each.value.deployment_type
-    deployment_option = each.value.load_balancer_info != null ? "WITH_TRAFFIC_CONTROL" : "WITHOUT_TRAFFIC_CONTROL"
+    deployment_option = (each.value.deployment_type == "BLUE_GREEN" || each.value.load_balancer_info != null) ? "WITH_TRAFFIC_CONTROL" : "WITHOUT_TRAFFIC_CONTROL"
   }
 
   # EC2 Tag Filters
