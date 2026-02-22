@@ -272,8 +272,8 @@ resource "aws_iam_role_policy" "this" {
             "s3:GetBucketAcl"
           ]
           Resource = [
-            "arn:aws:s3:::${local.s3_logs_bucket}",
-            "arn:aws:s3:::${local.s3_logs_location}*"
+            "arn:aws:s3:::${coalesce(local.s3_logs_bucket, "placeholder-bucket")}",
+            "arn:aws:s3:::${coalesce(local.s3_logs_location, "placeholder-prefix")}*"
           ]
         }
       } : stmt if try(var.logs_config.s3.status, "DISABLED") == "ENABLED" && local.s3_logs_location != null && local.s3_logs_bucket != null]
