@@ -561,7 +561,7 @@ data "aws_region" "current" {}
 
 locals {
   account_id = data.aws_caller_identity.current.account_id
-  region     = data.aws_region.current.name
+  region     = data.aws_region.current.region
 
   artifact_bucket_name = var.create_artifact_bucket ? coalesce(
     var.artifact_bucket_name,
@@ -693,6 +693,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
     id     = "expire-old-artifacts"
     status = "Enabled"
 
+    filter {}
+
     expiration {
       days = try(var.artifact_bucket_config.lifecycle_expiration_days, 90)
     }
@@ -800,7 +802,7 @@ module "codebuild" {
   vpc_config             = each.value.vpc_config
   logs_config            = each.value.logs_config
   service_role_arn       = each.value.service_role_arn
-  encryption_key         = coalesce(each.value.encryption_key, local.kms_key_arn)
+  encryption_key         = each.value.encryption_key != null ? each.value.encryption_key : local.kms_key_arn
   webhooks               = each.value.webhooks
   file_system_locations  = each.value.file_system_locations
   build_batch_config     = each.value.build_batch_config
