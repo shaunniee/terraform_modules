@@ -12,7 +12,10 @@ locals {
   create_role     = var.service_role_arn == null
   service_role_arn = local.create_role ? aws_iam_role.this[0].arn : var.service_role_arn
 
-  cloudwatch_log_group = try(var.logs_config.cloudwatch.group_name, "/aws/codebuild/${var.name}")
+  cloudwatch_log_group = coalesce(try(var.logs_config.cloudwatch.group_name, null), "/aws/codebuild/${var.name}")
+  vpc_subnet_arns      = var.vpc_config != null ? [for s in var.vpc_config.subnets : "arn:aws:ec2:${local.region}:${local.account_id}:subnet/${s}"] : []
+  s3_logs_location     = try(var.logs_config.s3.location, null)
+  s3_logs_bucket       = try(split("/", var.logs_config.s3.location)[0], null)
 
   # Determine if environment variables reference SSM or Secrets Manager
   has_ssm_vars     = length([for v in var.environment.environment_variables : v if v.type == "PARAMETER_STORE"]) > 0
@@ -193,7 +196,7 @@ resource "aws_iam_role_policy" "this" {
           Condition = {
             StringEquals = {
               "ec2:AuthorizedService" = "codebuild.amazonaws.com"
-              "ec2:Subnet"           = [for s in var.vpc_config.subnets : "arn:aws:ec2:${local.region}:${local.account_id}:subnet/${s}"]
+              "ec2:Subnet"           = local.vpc_subnet_arns
             }
           }
         }
@@ -269,11 +272,11 @@ resource "aws_iam_role_policy" "this" {
             "s3:GetBucketAcl"
           ]
           Resource = [
-            "arn:aws:s3:::${split("/", var.logs_config.s3.location)[0]}",
-            "arn:aws:s3:::${var.logs_config.s3.location}*"
+            "arn:aws:s3:::${local.s3_logs_bucket}",
+            "arn:aws:s3:::${local.s3_logs_location}*"
           ]
         }
-      } : stmt if try(var.logs_config.s3.status, "DISABLED") == "ENABLED"]
+      } : stmt if try(var.logs_config.s3.status, "DISABLED") == "ENABLED" && local.s3_logs_location != null && local.s3_logs_bucket != null]
     )
   })
 }
