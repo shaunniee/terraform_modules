@@ -24,7 +24,7 @@ locals {
         domain_name        = domain_name
         zone_id            = local.certificate_zone_ids[cert_domain]
       }
-      if upper(try(local.certificates_by_domain[cert_domain].validation_method, "DNS")) == "DNS" && local.certificate_zone_ids[cert_domain] != null
+      if upper(try(local.certificates_by_domain[cert_domain].validation_method, "DNS")) == "DNS"
     }
   ]...)
 }
