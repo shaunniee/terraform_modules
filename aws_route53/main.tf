@@ -32,7 +32,7 @@ resource "aws_route53_health_check" "this" {
   failure_threshold = each.value.failure_threshold
   measure_latency   = each.value.measure_latency
 
-  regions           = lookup(each.value, "regions", null)
+  regions = lookup(each.value, "regions", null)
   tags = {
     Name = each.key
   }
@@ -42,9 +42,9 @@ locals {
   flat_records = flatten([
     for zone_key, zone_records in var.records : [
       for record_name, record in zone_records : {
-        zone_key   = zone_key
-        name       = record_name
-        config     = record
+        zone_key = zone_key
+        name     = record_name
+        config   = record
       }
     ]
   ])
@@ -53,7 +53,7 @@ locals {
 resource "aws_route53_record" "this" {
   for_each = {
     for r in local.flat_records :
-    "${r.zone_key}-${r.name}-${try(r.config.routing_policy.set_identifier, "default")}" => r
+    "${r.zone_key}-${r.name}-${coalesce(try(r.config.routing_policy.set_identifier, null), "default")}" => r
   }
 
   zone_id = local.all_zone_ids[each.value.zone_key]
@@ -67,7 +67,7 @@ resource "aws_route53_record" "this" {
     for_each = each.value.config.alias != null ? [each.value.config.alias] : []
     content {
       name                   = alias.value.name
-      zone_id               = alias.value.zone_id
+      zone_id                = alias.value.zone_id
       evaluate_target_health = alias.value.evaluate_target_health
     }
   }

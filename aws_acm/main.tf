@@ -3,6 +3,11 @@ locals {
     for cert in var.certificates : cert.domain_name => cert
   }
 
+  certificate_validation_domains = {
+    for cert_domain, cert in local.certificates_by_domain :
+    cert_domain => distinct(concat([cert.domain_name], try(cert.san, [])))
+  }
+
   certificate_zone_ids = {
     for domain, cert in local.certificates_by_domain :
     domain => coalesce(
@@ -12,16 +17,14 @@ locals {
   }
 
   dns_validation_records = merge([
-    for cert_domain, cert in aws_acm_certificate.this : {
-      for dvo in cert.domain_validation_options :
-      "${cert_domain}/${dvo.domain_name}" => {
+    for cert_domain, domains in local.certificate_validation_domains : {
+      for domain_name in domains :
+      "${cert_domain}/${domain_name}" => {
         certificate_domain = cert_domain
+        domain_name        = domain_name
         zone_id            = local.certificate_zone_ids[cert_domain]
-        name               = dvo.resource_record_name
-        type               = dvo.resource_record_type
-        value              = dvo.resource_record_value
       }
-      if cert.validation_method == "DNS" && local.certificate_zone_ids[cert_domain] != null
+      if upper(try(local.certificates_by_domain[cert_domain].validation_method, "DNS")) == "DNS" && local.certificate_zone_ids[cert_domain] != null
     }
   ]...)
 }
@@ -44,10 +47,22 @@ resource "aws_route53_record" "dns_validation" {
   for_each = local.dns_validation_records
 
   zone_id = each.value.zone_id
-  name    = each.value.name
-  type    = each.value.type
-  records = [each.value.value]
-  ttl     = 60
+  name = one([
+    for dvo in aws_acm_certificate.this[each.value.certificate_domain].domain_validation_options :
+    dvo.resource_record_name
+    if dvo.domain_name == each.value.domain_name
+  ])
+  type = one([
+    for dvo in aws_acm_certificate.this[each.value.certificate_domain].domain_validation_options :
+    dvo.resource_record_type
+    if dvo.domain_name == each.value.domain_name
+  ])
+  records = [one([
+    for dvo in aws_acm_certificate.this[each.value.certificate_domain].domain_validation_options :
+    dvo.resource_record_value
+    if dvo.domain_name == each.value.domain_name
+  ])]
+  ttl = 60
 }
 
 resource "aws_acm_certificate_validation" "this" {
