@@ -46,7 +46,8 @@ resource "aws_acm_certificate" "this" {
 resource "aws_route53_record" "dns_validation" {
   for_each = local.dns_validation_records
 
-  zone_id = each.value.zone_id
+  allow_overwrite = true
+  zone_id         = each.value.zone_id
   name = one([
     for dvo in aws_acm_certificate.this[each.value.certificate_domain].domain_validation_options :
     dvo.resource_record_name
